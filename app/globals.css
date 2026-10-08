@@ -40,7 +40,7 @@ body {
     @apply inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-7 py-3.5 text-[15px] font-semibold tracking-wide text-cream backdrop-blur transition duration-300 hover:border-white/30 hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50;
   }
   .btn-chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-[13px] font-medium text-cream/85 transition hover:border-wine-400/50 hover:bg-wine-500/10 hover:text-cream active:scale-95;
+    @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-[13px] font-medium text-cream/85 transition hover:border-wine-400/50 hover:bg-wine-500/10 hover:text-cream active:scale-95;
   }
   .field {
     @apply w-full rounded-xl border border-white/10 bg-ink-900/80 px-4 py-3 text-[15px] text-cream placeholder:text-cream/30 outline-none transition focus:border-wine-400/60 focus:ring-2 focus:ring-wine-500/20;

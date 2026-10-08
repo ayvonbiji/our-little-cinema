@@ -144,3 +144,20 @@ export function meetingService(url: string | null): string {
   const c = checkMeetingUrl(url);
   return c.ok ? c.service : "call";
 }
+
+/**
+ * For classic Teams links, the same meeting can be opened straight in the Teams
+ * desktop app with the msteams: scheme (handy when the browser can't show it).
+ */
+export function teamsAppLink(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.hostname.toLowerCase() === "teams.microsoft.com" && u.pathname.startsWith("/l/")) {
+      return `msteams:${u.pathname}${u.search}`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}

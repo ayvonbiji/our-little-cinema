@@ -2,7 +2,11 @@
 
 **Different places. Same movie. Together.**
 
-A private website for two people in different countries. One of you uploads a video, and both of you watch **the same cloud copy** in sync. Play, pause and seek happen on both screens. There's also a little chat, floating reactions, and a one-tap link to your video call.
+A private website for two people in different countries. Inside one private room you get:
+
+- **💻 Our Call** (the home screen): your Microsoft Teams (or Google Meet / Zoom) meeting, saved to the room, with the chat beside it.
+- **🎬 Watch**: one of you uploads a video and both of you watch **the same cloud copy** in sync. Play, pause and seek happen on both screens.
+- Live chat, floating reactions, "I'm here ❤️", and "Send a kiss 💋".
 
 Built with **Next.js 14 · TypeScript · Tailwind CSS · Supabase (Realtime + Storage)**.
 
@@ -29,6 +33,26 @@ Built with **Next.js 14 · TypeScript · Tailwind CSS · Supabase (Realtime + St
 - **Watching.** The room row saves the uploaded file's path (`storage_path`). Each browser asks the server for a **signed playback link** (valid 12 hours) and streams that same cloud file. Seeking works because the files support byte ranges.
 - **Sync.** Every play/pause/seek is one event stamped with a shared server clock. Each player computes "where we should be now", nudges its speed slightly for small drift, and jumps for big drift. Anyone who joins or reconnects reads the saved state and lands at the right second.
 - **Privacy.** The bucket is **private**, with no storage policies, so the browser key can't list or download anything. Only the server can create signed links, and only for a valid room code and a file inside that room's folder. The secret key lives only on the server (`SUPABASE_SECRET_KEY`, no `NEXT_PUBLIC_` prefix) and is never sent to the browser.
+
+## 💻 Our Call and Microsoft Teams embedding (please read)
+
+1. Paste the Teams link and click **Save Meeting**. It's stored on the room (`meeting_url`), so your partner gets it automatically.
+2. **Enter Our Call ❤️** first asks the app's server (`/api/meeting/check`) whether the meeting page allows other websites to show it. Browsers silently refuse to show pages that send `X-Frame-Options` or a `frame-ancestors` rule, and a page can't detect that refusal itself.
+   - If framing is allowed, the meeting opens **inside the cinema**, with camera and microphone permission and the chat beside it.
+   - If the service forbids it, the page says *"Microsoft Teams doesn't allow this meeting to be embedded here."* It then offers **Open Teams** (new tab) and **Open in the Teams app** (`msteams:` link). The cinema, chat and room stay open.
+   - If the check can't tell, it tries in-page and always shows a "Not loading? Open Teams" bar.
+
+**What to expect:** Microsoft doesn't support showing normal Teams meeting links inside other websites. Its supported way to put a Teams meeting inside your own web page is **Azure Communication Services (ACS) Teams interoperability**. Google Meet also refuses framing, and Zoom needs its own Meeting SDK. So in practice the honest fallback will show for these links.
+
+### Want the Teams call truly inside the page? (optional, needs Microsoft setup)
+That requires building the call with **Azure Communication Services** instead of an iframe:
+1. An **Azure subscription** and an **Azure Communication Services** resource (Azure Portal → Create → "Communication Services").
+2. The meeting must be scheduled from a **work or school Microsoft 365 account**. ACS can't join *personal* Teams meetings (teams.live.com / Teams free).
+3. That Teams organization must allow **anonymous / external users to join meetings** (a setting in the Teams admin center).
+4. A server route that uses the ACS connection string (server-only env var) to issue short-lived guest tokens, plus the ACS **UI Library** `CallComposite` (React) in the page, joining with the Teams meeting link.
+5. Costs: standard ACS pay-as-you-go for audio/video minutes. There's no extra fee for the Teams interop itself.
+
+Both of you would then join as guests inside the cinema, possibly through the Teams lobby depending on the meeting options.
 
 > **Why not Netflix / Prime Video / Disney+?** Their videos are DRM-protected and can't be played or synced by any other website. Upload your own videos, or paste a direct `.mp4` / `.webm` / `.m3u8` link you're allowed to use.
 
@@ -81,12 +105,14 @@ The app deletes the old file whenever you **Change** or **Remove** a video, so s
 
 ## Using it
 
-1. Open the site → **Create Private Room** → tap **Ayvon**.
-2. **Copy Room Link** → send it to Aksa. She opens it and taps **Aksa**.
-3. **Upload Video** → pick an MP4. Both of you see *Uploading video… 45%*, then *Video ready ❤️*.
-4. Press ▶. It plays for both of you. Pause, skip, or drag the bar and the other screen follows.
-5. **Our Call:** paste your Google Meet / Teams / Zoom link once. **Join Our Call ❤️** opens it in a new tab while the cinema stays open.
+1. Open the site → **Create Private Room** → tap **Ayvon**. The room opens on **💻 Our Call**.
+2. Paste your Teams meeting link → **Save Meeting** → **Enter Our Call ❤️**.
+3. **Copy Room Link** (bottom bar) → send it to Aksa. She opens it, taps **Aksa**, and sees the same call with no pasting.
+4. Chat on the right (below on phones) in either mode.
+5. **🎬 Watch** → **Upload Video** → pick an MP4. Progress shows in a slim card (*Uploading video… 72%*) while everything else keeps working. When it finishes you see *Video ready ❤️*. Press ▶ and it plays for both of you.
 6. **Logout** clears who you are on this device and returns you to the lobby.
+
+When one of you presses play while the other is in Our Call, the other's player stays silent. A dot on 🎬 Watch shows it's playing; switching joins at the right second.
 
 **Keyboard:** `Space` play/pause · `←`/`→` 10 s · `F` fullscreen · `M` mute.
 
@@ -103,11 +129,12 @@ app/
   api/upload/start/route.ts   checks room → one-time signed upload token
   api/video/url/route.ts      checks room + path → signed playback link
   api/video/cleanup/route.ts  deletes replaced/removed videos
+  api/meeting/check/route.ts  can this meeting page be shown inside ours?
 components/
   VideoPlayer.tsx             custom player + sync engine
   VideoPicker.tsx             "What are we watching?": Upload / Link / Currently watching
-  UploadOverlay.tsx           progress, cancel, retry
-  CallCard.tsx                Our Call: add / edit / remove / join
+  CallStage.tsx               Our Call: save link, in-page meeting, honest fallback
+  UploadProgressCard.tsx      background upload progress / Video ready ❤️
   ChatPanel.tsx, RoomBits.tsx, FloatingReactions.tsx, …
 hooks/
   useRoom.ts                  Realtime: state, presence, chat, reactions, call link, upload progress

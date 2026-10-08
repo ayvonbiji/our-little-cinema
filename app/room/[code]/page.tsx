@@ -8,8 +8,8 @@ import SetupNotice from "@/components/SetupNotice";
 import VideoPlayer from "@/components/VideoPlayer";
 import ChatPanel from "@/components/ChatPanel";
 import VideoPicker, { type LinkChoice } from "@/components/VideoPicker";
-import CallCard from "@/components/CallCard";
-import UploadOverlay, { type LocalUpload } from "@/components/UploadOverlay";
+import CallStage from "@/components/CallStage";
+import UploadProgressCard, { type LocalUpload } from "@/components/UploadProgressCard";
 import { InviteCard, NamesDialog, PresenceChips, StatusPill, Toasts, WhoIsWatching } from "@/components/RoomBits";
 import { CopyIcon, FilmIcon, PencilIcon } from "@/components/Icons";
 import { useRoom } from "@/hooks/useRoom";
@@ -17,7 +17,7 @@ import { useVideoUrl } from "@/hooks/useVideoUrl";
 import { uploadVideo, uploadErrorText, type UploadHandle } from "@/lib/upload";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { DEFAULT_NAMES, clearIdentity, getSavedName, makeIdentity, saveName } from "@/lib/identity";
-import { formatTime } from "@/lib/videos";
+import { formatTime, meetingService } from "@/lib/videos";
 import type { CoupleNames, Identity, RoomRow, RoomState, UploadStatus } from "@/lib/types";
 
 export default function RoomPage({ params }: { params: { code: string } }) {
@@ -72,6 +72,8 @@ function RoomGate({ code }: { code: string }) {
   return <Cinema code={code} me={me} initialNames={names} onIdentityChange={setMe} />;
 }
 
+type Mode = "watch" | "call";
+
 function Cinema({
   code,
   me,
@@ -87,16 +89,19 @@ function Cinema({
   const r = useRoom(code, me, initialNames);
   const { room, status, peers, messages, reactions, toasts, serverNow, updatePlayback, pushToast, remoteUpload, sendUploadStatus } = r;
 
+  const [mode, setModeState] = useState<Mode | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [namesOpen, setNamesOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [drift, setDrift] = useState<number | null>(null);
   const [link, setLink] = useState("");
   const [upload, setUpload] = useState<LocalUpload | null>(null);
+  const [readyTitle, setReadyTitle] = useState<string | null>(null);
   const uploadRef = useRef<UploadHandle | null>(null);
   const cancelledRef = useRef(false);
   const lastFileRef = useRef<File | null>(null);
   const lastSentRef = useRef(0);
+  const savingMeetingRef = useRef(false);
 
   const names = room?.names ?? initialNames;
   const partnerName = names.one === me.name ? names.two : names.one;
@@ -108,6 +113,34 @@ function Cinema({
   const video = useVideoUrl(code, isUpload ? room?.storagePath ?? null : null);
   const retriedUrlRef = useRef<string | null>(null);
   const src = !room ? null : isUpload ? video.url : room.videoUrl;
+  const hasVideo = Boolean(room?.videoUrl || room?.storagePath);
+
+  // ── 🎬 Watch / 💻 Our Call ─────────────────────────────────────────────
+  const modeKey = `olc:mode:${code}`;
+  const setMode = useCallback(
+    (m: Mode) => {
+      setModeState(m);
+      try {
+        window.sessionStorage.setItem(modeKey, m);
+      } catch {
+        /* ignore */
+      }
+    },
+    [modeKey],
+  );
+  // First visit: Our Call is home, unless there's only a video and no call yet.
+  const roomLoaded = Boolean(room);
+  useEffect(() => {
+    if (!roomLoaded || mode) return;
+    let saved: string | null = null;
+    try {
+      saved = window.sessionStorage.getItem(modeKey);
+    } catch {
+      /* ignore */
+    }
+    if (saved === "watch" || saved === "call") setModeState(saved);
+    else setModeState(!room?.meetingUrl && hasVideo ? "watch" : "call");
+  }, [roomLoaded, mode, modeKey, room?.meetingUrl, hasVideo]);
 
   useEffect(() => {
     setLink(`${window.location.origin}/room/${code}`);
@@ -142,18 +175,24 @@ function Cinema({
   useEffect(() => {
     const prev = prevRef.current;
     prevRef.current = room;
-    if (!prev || !room || room.updatedAt === prev.updatedAt) return;
+    if (!prev || !room) return;
+    if (room.meetingUrl !== prev.meetingUrl && !savingMeetingRef.current) {
+      pushToast(room.meetingUrl ? `Our Call is ready ❤️ (${meetingService(room.meetingUrl)})` : "The call link was removed");
+    }
+    if (room.updatedAt === prev.updatedAt) return;
     if (!room.updatedBy || room.updatedBy === me.name) return;
     const who = room.updatedBy;
     const videoChanged =
       room.videoUrl !== prev.videoUrl || room.storagePath !== prev.storagePath || room.videoTitle !== prev.videoTitle;
     if (videoChanged) {
-      if (room.videoUrl || room.storagePath) pushToast(`Video ready ❤️ ${who} shared “${room.videoTitle}”`);
-      else pushToast(`${who} removed the video`);
-    } else if (room.isPlaying && !prev.isPlaying) pushToast(`${who} pressed play`);
+      if (room.videoUrl || room.storagePath) {
+        setReadyTitle(room.videoTitle ?? "");
+        pushToast(`Video ready ❤️ ${who} shared “${room.videoTitle}”`);
+      } else pushToast(`${who} removed the video`);
+    } else if (room.isPlaying && !prev.isPlaying) pushToast(`${who} pressed play${mode === "call" ? " (🎬 Watch to join)" : ""}`);
     else if (!room.isPlaying && prev.isPlaying) pushToast(`${who} paused`);
     else pushToast(`${who} jumped to ${formatTime(room.position)}`);
-  }, [room, me.name, pushToast]);
+  }, [room, me.name, pushToast, mode]);
 
   // Don't let a stray tab-close kill an upload without asking.
   const uploading = upload?.status === "uploading";
@@ -182,10 +221,11 @@ function Cinema({
     }).catch(() => {});
   }, [code]);
 
-  // ── Upload: my file → private cloud storage → both of us play the same copy ──
+  // ── Upload: runs in the background; the call, video and chat keep working ──
   const startUpload = useCallback(
     async (file: File) => {
       setPickerOpen(false);
+      setReadyTitle(null);
       lastFileRef.current = file;
       cancelledRef.current = false;
       const report = (progress: number, st: UploadStatus["status"]) =>
@@ -209,14 +249,9 @@ function Cinema({
         uploadRef.current = null;
         setUpload(null);
         report(100, "done");
-        await updatePlayback({
-          sourceType: "upload",
-          storagePath: path,
-          videoUrl: null,
-          videoTitle: file.name.replace(/\.[a-z0-9]{1,5}$/i, ""),
-          position: 0,
-          isPlaying: false,
-        });
+        const title = file.name.replace(/\.[a-z0-9]{1,5}$/i, "");
+        await updatePlayback({ sourceType: "upload", storagePath: path, videoUrl: null, videoTitle: title, position: 0, isPlaying: false });
+        setReadyTitle(title);
         pushToast("Video ready ❤️");
         cleanupStorage();
       } catch (e) {
@@ -240,15 +275,29 @@ function Cinema({
 
   const chooseLink = (c: LinkChoice) => {
     setPickerOpen(false);
+    setMode("watch");
     updatePlayback({ ...c, storagePath: null, position: 0, isPlaying: false }).then(cleanupStorage);
   };
 
   const removeVideo = () => {
     setPickerOpen(false);
+    setReadyTitle(null);
     updatePlayback({ videoUrl: null, videoTitle: null, storagePath: null, sourceType: "url", position: 0, isPlaying: false }).then(
       cleanupStorage,
     );
   };
+
+  const saveMeeting = useCallback(
+    async (url: string | null) => {
+      savingMeetingRef.current = true;
+      try {
+        await r.updateMeeting(url);
+      } finally {
+        window.setTimeout(() => (savingMeetingRef.current = false), 300);
+      }
+    },
+    [r],
+  );
 
   const copyLink = async () => {
     try {
@@ -267,35 +316,13 @@ function Cinema({
   };
 
   if (status === "not-found") return <NotFound />;
-  if (!room) return <Loading />;
+  if (!room || !mode) return <Loading />;
 
   const partnerBuffering = partner?.buffering ? partner.name : null;
-  const hasVideo = Boolean(room.videoUrl || room.storagePath);
   const partnerUploading = partner && remoteUpload?.status === "uploading" ? remoteUpload : null;
 
   let overlay: React.ReactNode = null;
-  if (upload) {
-    overlay = (
-      <UploadOverlay
-        upload={upload}
-        onCancel={cancelUpload}
-        onRetry={() => lastFileRef.current && startUpload(lastFileRef.current)}
-        onDismiss={() => setUpload(null)}
-      />
-    );
-  } else if (partnerUploading && !hasVideo) {
-    overlay = (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-ink-950/85 px-6 text-center">
-        <p className="eyebrow">Almost ready</p>
-        <p className="font-display text-2xl text-cream sm:text-3xl">
-          {partnerUploading.name} is uploading a video… {Math.floor(partnerUploading.progress)}%
-        </p>
-        <div className="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-white/10">
-          <div className="h-full rounded-full bg-wine-500/80 transition-[width] duration-700" style={{ width: `${Math.max(2, partnerUploading.progress)}%` }} />
-        </div>
-      </div>
-    );
-  } else if (isUpload && video.error && !video.url) {
+  if (isUpload && video.error && !video.url) {
     overlay = (
       <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-ink-950/90 px-6 text-center">
         <p className="max-w-sm text-sm text-cream/75">{video.error}</p>
@@ -307,76 +334,64 @@ function Cinema({
   }
 
   return (
-    <main className="relative min-h-[100svh] pb-10">
+    <main className="relative min-h-[100svh]">
       <Ambient dim />
       {/* Curtain fade on entering */}
       <div className="pointer-events-none fixed inset-0 z-[70] bg-ink-950 animate-curtain" />
 
-      <header className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
-        <div className="flex items-center gap-1.5">
-          <Link href="/" className="group flex items-center gap-2.5">
-            <FilmIcon className="h-5 w-5 text-wine-400" />
-            <span className="font-display text-lg tracking-[0.14em] text-cream/90 group-hover:text-cream">
-              {names.one.toUpperCase()} <span className="text-wine-400">❤️</span> {names.two.toUpperCase()}
-            </span>
+      <header className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3 px-4 pb-3 pt-4 sm:px-6">
+        <div>
+          <Link href="/" className="eyebrow hover:text-cream/70">
+            Our Little Cinema
           </Link>
-          <button
-            onClick={() => setNamesOpen(true)}
-            className="rounded-full p-1.5 text-cream/30 hover:bg-white/10 hover:text-cream/80"
-            aria-label="Edit names"
-          >
-            <PencilIcon className="h-3.5 w-3.5" />
-          </button>
+          <div className="mt-0.5 flex items-center gap-1.5">
+            <span className="font-display text-2xl tracking-[0.06em] text-cream">
+              {names.one} <span className="text-wine-400">❤️</span> {names.two}
+            </span>
+            <button
+              onClick={() => setNamesOpen(true)}
+              className="rounded-full p-1.5 text-cream/30 hover:bg-white/10 hover:text-cream/80"
+              aria-label="Edit names"
+            >
+              <PencilIcon className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
-
         <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
-          <StatusPill status={status} partnerOnline={Boolean(partner)} partnerName={partnerName} drift={drift} />
+          <StatusPill status={status} partnerOnline={Boolean(partner)} partnerName={partnerName} drift={mode === "watch" ? drift : null} />
           <PresenceChips myName={me.name} partnerName={partnerDisplay} partner={partner} />
-          <button className="btn-chip" onClick={copyLink}>
-            <CopyIcon className="h-4 w-4" /> Copy Room Link
-          </button>
-          <button className="btn-chip" onClick={logout}>
-            Logout
-          </button>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1500px] gap-5 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0 space-y-4">
-          {(inviteOpen || (!partner && status === "connected" && !hasVideo && !upload)) && (
-            <InviteCard link={link} code={code} partnerName={partnerName} onClose={() => setInviteOpen(false)} />
-          )}
-
-          <VideoPlayer
-            room={room}
-            serverNow={serverNow}
-            src={src}
-            srcPending={isUpload && video.loading}
-            overlay={overlay}
-            notice={partnerUploading && hasVideo ? `${partnerUploading.name} is uploading… ${Math.floor(partnerUploading.progress)}%` : null}
-            onSourceError={() => {
-              if (!isUpload || !video.url || retriedUrlRef.current === video.url) return false;
-              retriedUrlRef.current = video.url;
-              video.refresh();
-              return true;
-            }}
-            reactions={reactions}
-            partnerBuffering={partnerBuffering}
-            onPlay={(position) => updatePlayback({ isPlaying: true, position })}
-            onPause={(position) => updatePlayback({ isPlaying: false, position })}
-            onSeek={(position) => updatePlayback({ position })}
-            onBuffering={r.setBuffering}
-            onDrift={onDrift}
-            onOpenPicker={() => setPickerOpen(true)}
-          />
-
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <p className="eyebrow">{hasVideo ? "Now showing" : "Private screening"}</p>
-              <p className="truncate font-display text-2xl text-cream">{hasVideo ? room.videoTitle : "Nothing chosen yet"}</p>
-              <p className="mt-0.5 text-[13px] italic text-cream/45">
-                {partner ? `${partner.name} is watching with you` : `${partnerName} hasn't arrived yet`}
-              </p>
+      <div className="mx-auto grid max-w-[1500px] gap-4 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-5">
+        <div className="min-w-0 space-y-3">
+          {/* Mode switcher + small love buttons */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div role="tablist" aria-label="Room mode" className="inline-flex rounded-full border border-white/[0.08] bg-black/30 p-1 backdrop-blur">
+              {(
+                [
+                  ["watch", "🎬 Watch"],
+                  ["call", "💻 Our Call"],
+                ] as const
+              ).map(([m, label]) => (
+                <button
+                  key={m}
+                  role="tab"
+                  aria-selected={mode === m}
+                  onClick={() => setMode(m)}
+                  className={`relative rounded-full px-5 py-2 text-[14px] font-semibold transition ${
+                    mode === m ? "bg-wine-500 text-white shadow-[0_6px_24px_-8px_rgba(197,58,79,0.9)]" : "text-cream/60 hover:text-cream"
+                  }`}
+                >
+                  {label}
+                  {m === "watch" && mode !== "watch" && room.isPlaying && (
+                    <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 animate-pulseDot rounded-full bg-emerald-400" title="Playing now" />
+                  )}
+                  {m === "call" && mode !== "call" && room.meetingUrl && (
+                    <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-wine-300" title="Call link saved" />
+                  )}
+                </button>
+              ))}
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="btn-chip" onClick={() => r.sendReaction("❤️", "I'm here ❤️")}>
@@ -385,16 +400,82 @@ function Cinema({
               <button className="btn-chip" onClick={() => r.sendReaction("💋", "sent you a kiss 💋")}>
                 Send a kiss 💋
               </button>
-              <button className="btn-chip border-wine-500/40" onClick={() => setPickerOpen(true)} disabled={uploading}>
-                <FilmIcon className="h-4 w-4" /> {hasVideo ? "Change Video" : "Upload Video"}
-              </button>
             </div>
           </div>
 
-          <CallCard meetingUrl={room.meetingUrl} onSave={r.updateMeeting} />
+          {(inviteOpen || (!partner && status === "connected" && !hasVideo && !room.meetingUrl && !upload)) && (
+            <InviteCard link={link} code={code} partnerName={partnerName} onClose={() => setInviteOpen(false)} />
+          )}
+
+          <UploadProgressCard
+            mine={upload}
+            remote={!upload ? partnerUploading : null}
+            ready={readyTitle}
+            showWatch={mode !== "watch"}
+            onCancel={cancelUpload}
+            onRetry={() => lastFileRef.current && startUpload(lastFileRef.current)}
+            onDismiss={() => {
+              setUpload(null);
+              setReadyTitle(null);
+            }}
+            onWatch={() => {
+              setMode("watch");
+              setReadyTitle(null);
+            }}
+          />
+
+          {/* 💻 Our Call: kept mounted so an in-page call keeps going while you watch */}
+          <section
+            aria-label="Our Call"
+            className={`${mode === "call" ? "" : "hidden"} relative h-[68svh] min-h-[380px] w-full overflow-hidden rounded-2xl bg-ink-900 shadow-[0_40px_120px_-30px_rgba(122,26,44,0.55)] ring-1 ring-white/[0.06] sm:h-auto sm:min-h-[460px] sm:aspect-video`}
+          >
+            <CallStage meetingUrl={room.meetingUrl} partnerName={partnerName} onSave={saveMeeting} />
+          </section>
+
+          {/* 🎬 Watch */}
+          {mode === "watch" && (
+            <>
+              <VideoPlayer
+                room={room}
+                serverNow={serverNow}
+                src={src}
+                srcPending={isUpload && video.loading}
+                overlay={overlay}
+                notice={null}
+                onSourceError={() => {
+                  if (!isUpload || !video.url || retriedUrlRef.current === video.url) return false;
+                  retriedUrlRef.current = video.url;
+                  video.refresh();
+                  return true;
+                }}
+                reactions={reactions}
+                partnerBuffering={partnerBuffering}
+                onPlay={(position) => updatePlayback({ isPlaying: true, position })}
+                onPause={(position) => updatePlayback({ isPlaying: false, position })}
+                onSeek={(position) => updatePlayback({ position })}
+                onBuffering={r.setBuffering}
+                onDrift={onDrift}
+                onOpenPicker={() => setPickerOpen(true)}
+              />
+              <div className="flex flex-wrap items-end justify-between gap-3 px-1">
+                <div className="min-w-0">
+                  <p className="eyebrow">{hasVideo ? "Now showing" : "Watch together"}</p>
+                  <p className="truncate font-display text-2xl text-cream">{hasVideo ? room.videoTitle : "Nothing chosen yet"}</p>
+                </div>
+                <p className="text-[13px] italic text-cream/45">
+                  {partner ? `${partner.name} is watching with you` : `${partnerName} hasn't arrived yet`}
+                </p>
+              </div>
+            </>
+          )}
+          {mode === "call" && (
+            <p className="px-1 text-[13px] italic text-cream/45">
+              {partner ? `${partner.name} is here with you` : `${partnerName} hasn't arrived yet`}
+            </p>
+          )}
         </div>
 
-        <div className="lg:sticky lg:top-4 lg:h-[calc(100svh-120px)]">
+        <div className="lg:sticky lg:top-4 lg:h-[calc(100svh-150px)]">
           <ChatPanel
             messages={messages}
             myName={me.name}
@@ -404,6 +485,32 @@ function Cinema({
           />
         </div>
       </div>
+
+      {/* Bottom action bar */}
+      <nav className="sticky bottom-0 z-30 mt-5 border-t border-white/[0.06] bg-ink-950/85 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-1.5 px-2 py-2.5 sm:justify-start sm:gap-2 sm:px-6 sm:py-3 [&>button]:px-3 [&>button]:py-2 [&>button]:text-[12px] sm:[&>button]:px-3.5 sm:[&>button]:text-[13px]">
+          <button
+            className="btn-chip"
+            disabled={uploading}
+            onClick={() => {
+              setMode("watch");
+              setPickerOpen(true);
+            }}
+          >
+            <FilmIcon className="hidden h-4 w-4 sm:block" /> {uploading ? "Uploading…" : hasVideo ? "Change Video" : "Upload Video"}
+          </button>
+          <button className={`btn-chip ${mode === "call" ? "border-wine-500/50 bg-wine-500/15" : ""}`} onClick={() => setMode("call")}>
+            Our Call
+          </button>
+          <button className="btn-chip" onClick={copyLink}>
+            <CopyIcon className="hidden h-4 w-4 sm:block" /> <span className="sm:hidden">Copy Link</span>
+            <span className="hidden sm:inline">Copy Room Link</span>
+          </button>
+          <button className="btn-chip sm:ml-auto" onClick={logout}>
+            Logout
+          </button>
+        </div>
+      </nav>
 
       <VideoPicker
         open={pickerOpen}

@@ -213,7 +213,7 @@ export function NamesDialog({ names, onSave, onClose }: { names: CoupleNames; on
 // ── Toasts ───────────────────────────────────────────────────────────────
 export function Toasts({ toasts }: { toasts: Toast[] }) {
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-40 flex flex-col items-center gap-2 px-4">
+    <div className="pointer-events-none fixed inset-x-0 bottom-20 z-40 flex flex-col items-center gap-2 px-4">
       {toasts.map((t) => (
         <div key={t.id} className="rounded-full border border-white/[0.08] bg-ink-850/90 px-4 py-2 text-[13px] text-cream/90 shadow-xl backdrop-blur animate-fadeIn">
           {t.text}
