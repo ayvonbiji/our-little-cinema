@@ -72,7 +72,7 @@ Copy `.env.example` → `.env.local` and fill in:
 | variable | where to find it |
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Project Settings → API → *Project URL* |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase → Project Settings → API → *anon public* key |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase → Project Settings → API Keys → the **publishable** key (`sb_publishable_…`) or the legacy *anon public* key. **Never** use the secret key here |
 | `NEXT_PUBLIC_PERSON_ONE` | default first name (`Ayvon`) |
 | `NEXT_PUBLIC_PERSON_TWO` | default second name (`Aksa`) |
 

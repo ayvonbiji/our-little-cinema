@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.45.4",
+    "@supabase/supabase-js": "2.115.0",
     "hls.js": "1.5.15",
     "nanoid": "5.0.7",
     "next": "14.2.35",
