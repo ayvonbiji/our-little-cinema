@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type Hls from "hls.js";
 import type { FloatingReaction, RoomState } from "@/lib/types";
 import { formatTime, isHls } from "@/lib/videos";
@@ -24,8 +24,16 @@ const APPLY_SEEK_THRESHOLD = 0.4; // seconds, when a new event arrives
 interface Props {
   room: RoomState;
   serverNow: () => number;
-  localFileUrl: string | null;
-  onPickLocalFile: (file: File) => void;
+  /** Playable URL (a signed cloud URL for uploads, or the pasted link). */
+  src: string | null;
+  /** Still fetching the playable URL. */
+  srcPending?: boolean;
+  /** Shown over the video instead of the empty state (e.g. upload progress). */
+  overlay?: ReactNode;
+  /** Small note in the top bar, e.g. "Ayvon is uploading… 45%". */
+  notice?: string | null;
+  /** Called when the video fails to load. Return true if a retry was started. */
+  onSourceError?: () => boolean;
   reactions: FloatingReaction[];
   partnerBuffering: string | null;
   onPlay: (position: number) => void;
@@ -43,8 +51,11 @@ type IOSVideo = HTMLVideoElement & { webkitEnterFullscreen?: () => void };
 export default function VideoPlayer({
   room,
   serverNow,
-  localFileUrl,
-  onPickLocalFile,
+  src,
+  srcPending = false,
+  overlay,
+  notice,
+  onSourceError,
   reactions,
   partnerBuffering,
   onPlay,
@@ -74,7 +85,6 @@ export default function VideoPlayer({
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimer = useRef<number | undefined>(undefined);
 
-  const src = room.sourceType === "local" ? localFileUrl : room.videoUrl;
 
   /** Where the shared clock says the video should be right now. */
   const expectedPosition = useCallback(() => {
@@ -317,9 +327,8 @@ export default function VideoPlayer({
   const shown = scrub ?? current;
   const fillPct = duration > 0 ? (shown / duration) * 100 : 0;
   const bufPct = duration > 0 ? (buffered / duration) * 100 : 0;
-  const showSpinner = Boolean(src) && !loadError && (!ready || waiting);
-  const needsLocalFile = room.sourceType === "local" && !localFileUrl;
-  const hasNothing = !room.videoUrl && room.sourceType !== "local";
+  const showSpinner = (Boolean(src) || srcPending) && !loadError && (!ready || waiting);
+  const hasNothing = !room.videoUrl && !room.storagePath;
 
   return (
     <div
@@ -364,10 +373,13 @@ export default function VideoPlayer({
           if (roomRef.current.isPlaying) onPause(e.currentTarget.duration || 0);
         }}
         onError={() => {
-          if (src)
-            setLoadError(
-              "This video can't be played here. The link may have expired, or the site doesn't allow other websites to play its videos.",
-            );
+          if (!src) return;
+          if (onSourceError?.()) return; // fetching a fresh link; we'll re-sync when it loads
+          setLoadError(
+            room.sourceType === "upload"
+              ? "This video couldn't be played. If it isn't an MP4, try converting it to MP4 and uploading again."
+              : "This video can't be played here. The link may have expired, or the site doesn't allow other websites to play its videos.",
+          );
         }}
       />
 
@@ -383,50 +395,34 @@ export default function VideoPlayer({
         }`}
       >
         <p className="truncate font-display text-lg italic text-cream/90 sm:text-2xl">{room.videoTitle ?? ""}</p>
-        {partnerBuffering && (
-          <span className="shrink-0 rounded-full bg-black/60 px-3 py-1 text-xs text-cream/80 backdrop-blur">
-            {partnerBuffering} is loading…
-          </span>
-        )}
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {notice && (
+            <span className="rounded-full bg-black/60 px-3 py-1 text-xs text-cream/85 backdrop-blur">{notice}</span>
+          )}
+          {partnerBuffering && (
+            <span className="rounded-full bg-black/60 px-3 py-1 text-xs text-cream/80 backdrop-blur">
+              {partnerBuffering} is loading…
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Empty state */}
-      {hasNothing && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 bg-ink-950/80 px-6 text-center">
-          <FilmIcon className="h-10 w-10 text-wine-400" />
-          <p className="font-display text-2xl italic text-cream/90 sm:text-3xl">What are we watching tonight?</p>
-          <button className="btn-primary" onClick={onOpenPicker}>
-            Choose a movie
-          </button>
-        </div>
+      {/* Empty state, or whatever the room wants to show over the video (upload progress) */}
+      {overlay ? (
+        <div className="absolute inset-0 z-10">{overlay}</div>
+      ) : (
+        hasNothing && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 bg-ink-950/80 px-6 text-center">
+            <FilmIcon className="h-10 w-10 text-wine-400" />
+            <p className="font-display text-2xl italic text-cream/90 sm:text-3xl">What are we watching?</p>
+            <button className="btn-primary" onClick={onOpenPicker}>
+              Upload a video
+            </button>
+          </div>
+        )
       )}
 
-      {/* Each person picks their own copy */}
-      {needsLocalFile && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950/85 px-6 text-center">
-          <p className="eyebrow">Your own copy</p>
-          <p className="max-w-md font-display text-2xl italic text-cream/90">
-            Choose your copy of &ldquo;{room.videoTitle}&rdquo;
-          </p>
-          <p className="max-w-sm text-sm text-cream/55">
-            You each open the same file on your own device. Nothing is uploaded, only play/pause/time is shared.
-          </p>
-          <label className="btn-primary cursor-pointer">
-            Choose file
-            <input
-              type="file"
-              accept="video/*,.mkv"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) onPickLocalFile(f);
-              }}
-            />
-          </label>
-        </div>
-      )}
-
-      {showSpinner && !needsLocalFile && (
+      {showSpinner && !overlay && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="h-12 w-12 animate-spin rounded-full border-2 border-white/15 border-t-wine-400" />
         </div>
@@ -436,7 +432,7 @@ export default function VideoPlayer({
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950/90 px-6 text-center">
           <p className="max-w-md text-sm leading-relaxed text-cream/80">{loadError}</p>
           <button className="btn-ghost" onClick={onOpenPicker}>
-            Choose another movie
+            Choose another video
           </button>
         </div>
       )}
@@ -459,8 +455,10 @@ export default function VideoPlayer({
       {/* Bottom controls */}
       {src && !loadError && (
         <div
-          className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-3 pb-3 pt-14 transition-opacity duration-500 sm:px-5 sm:pb-4 ${
-            controlsVisible || !room.isPlaying ? "opacity-100" : "pointer-events-none opacity-0"
+          // The fade-out gradient itself ignores taps, so tapping the picture on a phone
+          // still plays/pauses; only the actual controls catch touches.
+          className={`pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-3 pb-3 pt-14 transition-opacity duration-500 sm:px-5 sm:pb-4 ${
+            controlsVisible || !room.isPlaying ? "opacity-100 [&>*]:pointer-events-auto" : "opacity-0"
           }`}
         >
           <input

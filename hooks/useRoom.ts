@@ -16,6 +16,7 @@ import type {
   RoomState,
   SourceType,
   Toast,
+  UploadStatus,
 } from "@/lib/types";
 
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "not-found" | "error";
@@ -27,14 +28,22 @@ export interface PlaybackChange {
   videoUrl?: string | null;
   videoTitle?: string | null;
   sourceType?: SourceType;
+  storagePath?: string | null;
 }
 
 function rowToState(row: RoomRow, fallbackNames: CoupleNames): RoomState {
+  // Older rooms may still say "library" (a plain link) or "local" (the retired
+  // pick-your-own-copy mode, which has nothing shared to play).
+  const legacyLocal = row.source_type === "local";
+  const sourceType: SourceType =
+    row.source_type === "upload" || row.source_type === "hls" ? row.source_type : "url";
   return {
     code: row.code,
-    videoUrl: row.video_url,
-    videoTitle: row.video_title,
-    sourceType: row.source_type,
+    videoUrl: legacyLocal ? null : row.video_url,
+    videoTitle: legacyLocal ? null : row.video_title,
+    sourceType,
+    storagePath: row.storage_path ?? null,
+    meetingUrl: row.meeting_url ?? null,
     isPlaying: row.is_playing,
     position: Number(row.position) || 0,
     rate: Number(row.rate) || 1,
@@ -62,6 +71,7 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [remoteUpload, setRemoteUpload] = useState<UploadStatus | null>(null);
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const roomRef = useRef<RoomState | null>(null);
@@ -77,7 +87,8 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
 
   const pushToast = useCallback((text: string) => {
     const id = randomId();
-    setToasts((t) => [...t.slice(-2), { id, text }]);
+    // Skip exact repeats that are still on screen (presence can announce twice).
+    setToasts((t) => (t.some((x) => x.text === text) ? t : [...t.slice(-2), { id, text }]));
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
   }, []);
 
@@ -88,10 +99,22 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
     window.setTimeout(() => setReactions((r) => r.filter((z) => z.id !== id)), 3400);
   }, []);
 
-  /** Accept a state only if it is newer than what we have (last write wins). */
-  const applyState = useCallback((next: RoomState) => {
+  /**
+   * Accept playback state only if it is newer than what we have (last write wins).
+   * Names and the call link have their own events, so a playback event never
+   * overwrites them; a fresh database read (fromDb) always refreshes them.
+   */
+  const applyState = useCallback((incoming: RoomState, fromDb = false) => {
     const cur = roomRef.current;
-    if (cur && next.updatedAt < cur.updatedAt) return;
+    if (cur && incoming.updatedAt < cur.updatedAt) {
+      if (fromDb && (incoming.meetingUrl !== cur.meetingUrl || incoming.names !== cur.names)) {
+        const next = { ...cur, meetingUrl: incoming.meetingUrl, names: incoming.names };
+        roomRef.current = next;
+        setRoom(next);
+      }
+      return;
+    }
+    const next = cur && !fromDb ? { ...incoming, names: cur.names, meetingUrl: cur.meetingUrl } : incoming;
     roomRef.current = next;
     setRoom(next);
   }, []);
@@ -106,7 +129,7 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
     if (error) throw error;
     const row = (data as RoomRow[] | null)?.[0];
     if (!row) return false;
-    applyState(rowToState(row, fallbackNames));
+    applyState(rowToState(row, fallbackNames), true);
     return true;
   }, [code, applyState, fallbackNames]);
 
@@ -154,6 +177,19 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
           const p = payload as { emoji: string; name: string; label?: string };
           spawnReaction(p.emoji, p.name);
           if (p.label) pushToast(`${p.name}: ${p.label}`);
+        })
+        .on("broadcast", { event: "meeting" }, ({ payload }) => {
+          const cur = roomRef.current;
+          if (!cur) return;
+          const url = (payload as { url: string | null }).url;
+          const next = { ...cur, meetingUrl: url };
+          roomRef.current = next;
+          setRoom(next);
+        })
+        .on("broadcast", { event: "upload" }, ({ payload }) => {
+          const u = payload as UploadStatus;
+          setRemoteUpload(u.status === "uploading" ? u : null);
+          if (u.status === "error") pushToast(`${u.name}'s upload didn't finish`);
         })
         .on("broadcast", { event: "names" }, ({ payload }) => {
           const cur = roomRef.current;
@@ -259,7 +295,7 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
     (change: PlaybackChange) => {
       const cur = roomRef.current;
       const who = meRef.current;
-      if (!cur || !who) return;
+      if (!cur || !who) return Promise.resolve();
       const next: RoomState = {
         ...cur,
         ...change,
@@ -269,19 +305,25 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
       };
       applyState(next);
       channelRef.current?.send({ type: "broadcast", event: "state", payload: next });
-      getSupabase()
-        .rpc("update_room_state", {
-          p_code: next.code,
-          p_video_url: next.videoUrl,
-          p_video_title: next.videoTitle,
-          p_source_type: next.sourceType,
-          p_is_playing: next.isPlaying,
-          p_position: next.position,
-          p_rate: next.rate,
-          p_updated_at: next.updatedAt,
-          p_updated_by: next.updatedBy,
-        })
-        .then(({ error }) => {
+      const args = {
+        p_code: next.code,
+        p_video_url: next.videoUrl,
+        p_video_title: next.videoTitle,
+        p_source_type: next.sourceType,
+        p_is_playing: next.isPlaying,
+        p_position: next.position,
+        p_rate: next.rate,
+        p_updated_at: next.updatedAt,
+        p_updated_by: next.updatedBy,
+      };
+      const supabase = getSupabase();
+      return supabase
+        .rpc("update_room_state", { ...args, p_storage_path: next.sourceType === "upload" ? next.storagePath : null })
+        .then(async ({ error }) => {
+          // Database not migrated yet (migration 002)? Still save play/pause/seek.
+          if (error && /function|schema cache/i.test(error.message) && next.sourceType !== "upload") {
+            ({ error } = await supabase.rpc("update_room_state", args));
+          }
           if (error) console.warn("Could not save room state", error.message);
         });
     },
@@ -329,6 +371,27 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
     [code],
   );
 
+  /** Save / clear the "Our Call" link for both of us. */
+  const updateMeeting = useCallback(
+    async (url: string | null) => {
+      const { error } = await getSupabase().rpc("update_room_meeting", { p_code: code, p_url: url });
+      if (error) throw error;
+      const cur = roomRef.current;
+      if (cur) {
+        const next = { ...cur, meetingUrl: url };
+        roomRef.current = next;
+        setRoom(next);
+      }
+      channelRef.current?.send({ type: "broadcast", event: "meeting", payload: { url } });
+    },
+    [code],
+  );
+
+  /** Let the other person see "Ayvon is uploading… 45%". */
+  const sendUploadStatus = useCallback((u: UploadStatus) => {
+    channelRef.current?.send({ type: "broadcast", event: "upload", payload: u });
+  }, []);
+
   const setBuffering = useCallback((buffering: boolean) => {
     if (bufferingRef.current === buffering) return;
     bufferingRef.current = buffering;
@@ -353,5 +416,8 @@ export function useRoom(code: string, me: Identity | null, fallbackNames: Couple
     updateNames,
     setBuffering,
     pushToast,
+    updateMeeting,
+    sendUploadStatus,
+    remoteUpload,
   };
 }

@@ -1,4 +1,5 @@
-export type SourceType = "url" | "hls" | "local" | "library";
+/** "upload" = a video uploaded to the room's private cloud storage. */
+export type SourceType = "url" | "hls" | "upload";
 
 export interface CoupleNames {
   one: string;
@@ -20,7 +21,18 @@ export interface RoomState {
   rate: number;
   updatedAt: number;
   updatedBy: string | null;
+  /** Path of the uploaded video inside the private "room-videos" bucket. */
+  storagePath: string | null;
   names: CoupleNames;
+  meetingUrl: string | null;
+}
+
+/** Upload progress, shown to both people. */
+export interface UploadStatus {
+  name: string; // who is uploading
+  fileName: string;
+  progress: number; // 0–100
+  status: "uploading" | "done" | "error" | "cancelled";
 }
 
 export interface Identity {
@@ -60,13 +72,15 @@ export interface RoomRow {
   code: string;
   video_url: string | null;
   video_title: string | null;
-  source_type: SourceType;
+  source_type: SourceType | "local" | "library";
   is_playing: boolean;
   position: number;
   rate: number;
   updated_at: number;
   updated_by: string | null;
   names: CoupleNames | null;
+  storage_path: string | null;
+  meeting_url: string | null;
 }
 
 export interface MessageRow {

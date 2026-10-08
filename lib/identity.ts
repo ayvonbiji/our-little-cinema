@@ -57,6 +57,20 @@ export function saveName(name: string) {
   safeSet(NAME_KEY, name);
 }
 
+/** Logout: forget who this browser is, so the next visit asks "Who's watching?" again. */
+export function clearIdentity() {
+  try {
+    window.localStorage.removeItem(NAME_KEY);
+  } catch {
+    /* ignore */
+  }
+  try {
+    window.sessionStorage.removeItem(ID_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function makeIdentity(name: string): Identity {
   return { clientId: getClientId(), name };
 }

@@ -1,66 +1,5 @@
 import type { SourceType } from "./types";
-
-export interface LibraryVideo {
-  id: string;
-  title: string;
-  year: string;
-  duration: string;
-  description: string;
-  url: string;
-  poster: string;
-  license: string;
-}
-
-/**
- * Free, legally shareable short films from the Blender Foundation
- * (Creative Commons Attribution). Hosted on Google's public sample bucket.
- * Swap these for your own legally owned videos any time.
- */
-export const LIBRARY: LibraryVideo[] = [
-  {
-    id: "sintel",
-    title: "Sintel",
-    year: "2010",
-    duration: "15 min",
-    description: "A lonely girl searches the world for the baby dragon she once raised.",
-    url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
-    poster: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/Sintel.jpg",
-    license: "© Blender Foundation · CC BY 3.0",
-  },
-  {
-    id: "tears-of-steel",
-    title: "Tears of Steel",
-    year: "2012",
-    duration: "12 min",
-    description: "A sci-fi love story in Amsterdam: a broken-up couple and a robot future.",
-    url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
-    poster: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/TearsOfSteel.jpg",
-    license: "© Blender Foundation · CC BY 3.0",
-  },
-  {
-    id: "big-buck-bunny",
-    title: "Big Buck Bunny",
-    year: "2008",
-    duration: "10 min",
-    description: "A gentle giant rabbit gets his sweet revenge on three bullies.",
-    url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-    poster: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/BigBuckBunny.jpg",
-    license: "© Blender Foundation · CC BY 3.0",
-  },
-  {
-    id: "elephants-dream",
-    title: "Elephants Dream",
-    year: "2006",
-    duration: "11 min",
-    description: "Two strange men explore an endless, surreal machine.",
-    url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-    poster: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/ElephantsDream.jpg",
-    license: "© Blender Foundation · CC BY 2.5",
-  },
-];
-
-/** Plays from your own deployment if you drop a file in /public/videos (see README). */
-export const LOCAL_SAMPLE_URL = "/videos/sample.mp4";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, extensionOf } from "./storageConfig";
 
 const BLOCKED_HOSTS = [
   "netflix.com",
@@ -136,4 +75,72 @@ export function formatTime(sec: number): string {
   const h = Math.floor(sec / 3600);
   const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
   return `${h > 0 ? h + ":" : ""}${mm}:${String(s).padStart(2, "0")}`;
+}
+
+// ── Uploads ──────────────────────────────────────────────────────────────
+
+export type FileCheck =
+  | { ok: true; warning: string | null }
+  | { ok: false; reason: string };
+
+const LIKELY_UNSUPPORTED = ["mkv", "avi", "wmv", "flv", "3gp", "ts", "mpg", "mpeg"];
+
+/** Size limit + a gentle warning for formats browsers often can't play. */
+export function checkVideoFile(file: File): FileCheck {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return {
+      ok: false,
+      reason: `This video is ${formatBytes(file.size)}. Uploads can be up to ${MAX_UPLOAD_MB} MB right now (see README to raise the limit).`,
+    };
+  }
+  const ext = extensionOf(file.name);
+  let playable = "";
+  try {
+    playable = file.type ? document.createElement("video").canPlayType(file.type) : "";
+  } catch {
+    playable = "";
+  }
+  const knownGood = ["mp4", "m4v", "webm", "mov"].includes(ext);
+  if (LIKELY_UNSUPPORTED.includes(ext) || (!knownGood && !playable)) {
+    return { ok: true, warning: "This video format may not be supported by your browser. MP4 is recommended." };
+  }
+  return { ok: true, warning: null };
+}
+
+export function formatBytes(n: number): string {
+  if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (n >= 1024 * 1024) return `${Math.round(n / 1024 / 1024)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+// ── Our Call ─────────────────────────────────────────────────────────────
+
+export type MeetingCheck = { ok: true; url: string; service: string } | { ok: false; reason: string };
+
+const MEETING_HOSTS: { re: RegExp; service: string }[] = [
+  { re: /(^|\.)meet\.google\.com$/, service: "Google Meet" },
+  { re: /(^|\.)teams\.microsoft\.com$/, service: "Microsoft Teams" },
+  { re: /(^|\.)teams\.live\.com$/, service: "Microsoft Teams" },
+  { re: /(^|\.)zoom\.us$/, service: "Zoom" },
+  { re: /(^|\.)zoom\.com$/, service: "Zoom" },
+];
+
+export function checkMeetingUrl(raw: string): MeetingCheck {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return { ok: false, reason: "Paste the full link, starting with https://" };
+  }
+  const hit = MEETING_HOSTS.find((h) => h.re.test(u.hostname.toLowerCase()));
+  if (u.protocol !== "https:" || !hit) {
+    return { ok: false, reason: "Paste a Google Meet, Microsoft Teams or Zoom link." };
+  }
+  return { ok: true, url: u.toString(), service: hit.service };
+}
+
+export function meetingService(url: string | null): string {
+  if (!url) return "";
+  const c = checkMeetingUrl(url);
+  return c.ok ? c.service : "call";
 }

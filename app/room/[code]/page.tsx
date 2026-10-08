@@ -2,18 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import Ambient from "@/components/Ambient";
 import SetupNotice from "@/components/SetupNotice";
 import VideoPlayer from "@/components/VideoPlayer";
 import ChatPanel from "@/components/ChatPanel";
-import MoviePicker, { type MovieChoice } from "@/components/MoviePicker";
+import VideoPicker, { type LinkChoice } from "@/components/VideoPicker";
+import CallCard from "@/components/CallCard";
+import UploadOverlay, { type LocalUpload } from "@/components/UploadOverlay";
 import { InviteCard, NamesDialog, PresenceChips, StatusPill, Toasts, WhoIsWatching } from "@/components/RoomBits";
-import { FilmIcon, PencilIcon } from "@/components/Icons";
+import { CopyIcon, FilmIcon, PencilIcon } from "@/components/Icons";
 import { useRoom } from "@/hooks/useRoom";
+import { useVideoUrl } from "@/hooks/useVideoUrl";
+import { uploadVideo, uploadErrorText, type UploadHandle } from "@/lib/upload";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { DEFAULT_NAMES, getSavedName, makeIdentity, saveName } from "@/lib/identity";
+import { DEFAULT_NAMES, clearIdentity, getSavedName, makeIdentity, saveName } from "@/lib/identity";
 import { formatTime } from "@/lib/videos";
-import type { CoupleNames, Identity, RoomRow, RoomState } from "@/lib/types";
+import type { CoupleNames, Identity, RoomRow, RoomState, UploadStatus } from "@/lib/types";
 
 export default function RoomPage({ params }: { params: { code: string } }) {
   const code = decodeURIComponent(params.code).toLowerCase();
@@ -78,20 +83,31 @@ function Cinema({
   initialNames: CoupleNames;
   onIdentityChange: (i: Identity) => void;
 }) {
+  const router = useRouter();
   const r = useRoom(code, me, initialNames);
-  const { room, status, peers, messages, reactions, toasts, serverNow, updatePlayback, pushToast } = r;
+  const { room, status, peers, messages, reactions, toasts, serverNow, updatePlayback, pushToast, remoteUpload, sendUploadStatus } = r;
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [namesOpen, setNamesOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [drift, setDrift] = useState<number | null>(null);
-  const [localFile, setLocalFile] = useState<{ title: string; url: string } | null>(null);
   const [link, setLink] = useState("");
+  const [upload, setUpload] = useState<LocalUpload | null>(null);
+  const uploadRef = useRef<UploadHandle | null>(null);
+  const cancelledRef = useRef(false);
+  const lastFileRef = useRef<File | null>(null);
+  const lastSentRef = useRef(0);
 
   const names = room?.names ?? initialNames;
   const partnerName = names.one === me.name ? names.two : names.one;
   const partner = useMemo(() => peers.find((p) => p.clientId !== me.clientId), [peers, me.clientId]);
   const partnerDisplay = partner?.name ?? partnerName;
+
+  // Uploaded videos play from a signed link to the shared cloud copy.
+  const isUpload = room?.sourceType === "upload";
+  const video = useVideoUrl(code, isUpload ? room?.storagePath ?? null : null);
+  const retriedUrlRef = useRef<string | null>(null);
+  const src = !room ? null : isUpload ? video.url : room.videoUrl;
 
   useEffect(() => {
     setLink(`${window.location.origin}/room/${code}`);
@@ -129,11 +145,27 @@ function Cinema({
     if (!prev || !room || room.updatedAt === prev.updatedAt) return;
     if (!room.updatedBy || room.updatedBy === me.name) return;
     const who = room.updatedBy;
-    if (room.videoUrl !== prev.videoUrl || room.videoTitle !== prev.videoTitle) pushToast(`${who} chose “${room.videoTitle}” 🎬`);
-    else if (room.isPlaying && !prev.isPlaying) pushToast(`${who} pressed play`);
+    const videoChanged =
+      room.videoUrl !== prev.videoUrl || room.storagePath !== prev.storagePath || room.videoTitle !== prev.videoTitle;
+    if (videoChanged) {
+      if (room.videoUrl || room.storagePath) pushToast(`Video ready ❤️ ${who} shared “${room.videoTitle}”`);
+      else pushToast(`${who} removed the video`);
+    } else if (room.isPlaying && !prev.isPlaying) pushToast(`${who} pressed play`);
     else if (!room.isPlaying && prev.isPlaying) pushToast(`${who} paused`);
     else pushToast(`${who} jumped to ${formatTime(room.position)}`);
   }, [room, me.name, pushToast]);
+
+  // Don't let a stray tab-close kill an upload without asking.
+  const uploading = upload?.status === "uploading";
+  useEffect(() => {
+    if (!uploading) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [uploading]);
 
   const onDrift = useCallback((d: number | null) => {
     setDrift((old) => {
@@ -142,24 +174,137 @@ function Cinema({
     });
   }, []);
 
-  const setFile = useCallback((file: File, title: string) => {
-    setLocalFile((old) => {
-      if (old) URL.revokeObjectURL(old.url);
-      return { title, url: URL.createObjectURL(file) };
-    });
-  }, []);
+  const cleanupStorage = useCallback(() => {
+    fetch("/api/video/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }).catch(() => {});
+  }, [code]);
 
-  const choose = (c: MovieChoice) => {
+  // ── Upload: my file → private cloud storage → both of us play the same copy ──
+  const startUpload = useCallback(
+    async (file: File) => {
+      setPickerOpen(false);
+      lastFileRef.current = file;
+      cancelledRef.current = false;
+      const report = (progress: number, st: UploadStatus["status"]) =>
+        sendUploadStatus({ name: me.name, fileName: file.name, progress, status: st });
+
+      setUpload({ fileName: file.name, progress: 0, status: "uploading" });
+      report(0, "uploading");
+
+      const handle = uploadVideo(code, file, (pct) => {
+        setUpload((u) => (u && u.status === "uploading" ? { ...u, progress: pct } : u));
+        const now = Date.now();
+        if (now - lastSentRef.current > 1500) {
+          lastSentRef.current = now;
+          report(pct, "uploading");
+        }
+      });
+      uploadRef.current = handle;
+
+      try {
+        const { path } = await handle.promise;
+        uploadRef.current = null;
+        setUpload(null);
+        report(100, "done");
+        await updatePlayback({
+          sourceType: "upload",
+          storagePath: path,
+          videoUrl: null,
+          videoTitle: file.name.replace(/\.[a-z0-9]{1,5}$/i, ""),
+          position: 0,
+          isPlaying: false,
+        });
+        pushToast("Video ready ❤️");
+        cleanupStorage();
+      } catch (e) {
+        uploadRef.current = null;
+        if (cancelledRef.current) {
+          setUpload(null);
+          report(0, "cancelled");
+          return;
+        }
+        setUpload({ fileName: file.name, progress: 0, status: "error", error: uploadErrorText(e) });
+        report(0, "error");
+      }
+    },
+    [code, me.name, sendUploadStatus, updatePlayback, pushToast, cleanupStorage],
+  );
+
+  const cancelUpload = () => {
+    cancelledRef.current = true;
+    uploadRef.current?.cancel();
+  };
+
+  const chooseLink = (c: LinkChoice) => {
     setPickerOpen(false);
-    if (c.localFile) setFile(c.localFile, c.videoTitle);
-    updatePlayback({ videoUrl: c.videoUrl, videoTitle: c.videoTitle, sourceType: c.sourceType, position: 0, isPlaying: false });
+    updatePlayback({ ...c, storagePath: null, position: 0, isPlaying: false }).then(cleanupStorage);
+  };
+
+  const removeVideo = () => {
+    setPickerOpen(false);
+    updatePlayback({ videoUrl: null, videoTitle: null, storagePath: null, sourceType: "url", position: 0, isPlaying: false }).then(
+      cleanupStorage,
+    );
+  };
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      pushToast("Room link copied ❤️");
+    } catch {
+      window.prompt("Copy this link and send it to your love:", link);
+    }
+  };
+
+  const logout = () => {
+    if (uploading && !window.confirm("An upload is still running. Log out anyway?")) return;
+    uploadRef.current?.cancel();
+    clearIdentity();
+    router.push("/");
   };
 
   if (status === "not-found") return <NotFound />;
   if (!room) return <Loading />;
 
-  const localUrl = room.sourceType === "local" && localFile?.title === room.videoTitle ? localFile.url : null;
   const partnerBuffering = partner?.buffering ? partner.name : null;
+  const hasVideo = Boolean(room.videoUrl || room.storagePath);
+  const partnerUploading = partner && remoteUpload?.status === "uploading" ? remoteUpload : null;
+
+  let overlay: React.ReactNode = null;
+  if (upload) {
+    overlay = (
+      <UploadOverlay
+        upload={upload}
+        onCancel={cancelUpload}
+        onRetry={() => lastFileRef.current && startUpload(lastFileRef.current)}
+        onDismiss={() => setUpload(null)}
+      />
+    );
+  } else if (partnerUploading && !hasVideo) {
+    overlay = (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-ink-950/85 px-6 text-center">
+        <p className="eyebrow">Almost ready</p>
+        <p className="font-display text-2xl text-cream sm:text-3xl">
+          {partnerUploading.name} is uploading a video… {Math.floor(partnerUploading.progress)}%
+        </p>
+        <div className="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-white/10">
+          <div className="h-full rounded-full bg-wine-500/80 transition-[width] duration-700" style={{ width: `${Math.max(2, partnerUploading.progress)}%` }} />
+        </div>
+      </div>
+    );
+  } else if (isUpload && video.error && !video.url) {
+    overlay = (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-ink-950/90 px-6 text-center">
+        <p className="max-w-sm text-sm text-cream/75">{video.error}</p>
+        <button className="btn-ghost" onClick={() => video.refresh()}>
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <main className="relative min-h-[100svh] pb-10">
@@ -184,26 +329,37 @@ function Cinema({
           </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
           <StatusPill status={status} partnerOnline={Boolean(partner)} partnerName={partnerName} drift={drift} />
           <PresenceChips myName={me.name} partnerName={partnerDisplay} partner={partner} />
-          <button className="btn-chip" onClick={() => setInviteOpen((v) => !v)}>
-            Invite
+          <button className="btn-chip" onClick={copyLink}>
+            <CopyIcon className="h-4 w-4" /> Copy Room Link
+          </button>
+          <button className="btn-chip" onClick={logout}>
+            Logout
           </button>
         </div>
       </header>
 
       <div className="mx-auto grid max-w-[1500px] gap-5 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-4">
-          {(inviteOpen || (!partner && status === "connected" && !room.videoUrl && room.sourceType !== "local")) && (
+          {(inviteOpen || (!partner && status === "connected" && !hasVideo && !upload)) && (
             <InviteCard link={link} code={code} partnerName={partnerName} onClose={() => setInviteOpen(false)} />
           )}
 
           <VideoPlayer
             room={room}
             serverNow={serverNow}
-            localFileUrl={localUrl}
-            onPickLocalFile={(f) => setFile(f, room.videoTitle ?? f.name)}
+            src={src}
+            srcPending={isUpload && video.loading}
+            overlay={overlay}
+            notice={partnerUploading && hasVideo ? `${partnerUploading.name} is uploading… ${Math.floor(partnerUploading.progress)}%` : null}
+            onSourceError={() => {
+              if (!isUpload || !video.url || retriedUrlRef.current === video.url) return false;
+              retriedUrlRef.current = video.url;
+              video.refresh();
+              return true;
+            }}
             reactions={reactions}
             partnerBuffering={partnerBuffering}
             onPlay={(position) => updatePlayback({ isPlaying: true, position })}
@@ -216,10 +372,8 @@ function Cinema({
 
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <p className="eyebrow">{room.videoTitle ? "Now showing" : "Private screening"}</p>
-              <p className="truncate font-display text-2xl text-cream">
-                {room.videoTitle ?? "Nothing chosen yet"}
-              </p>
+              <p className="eyebrow">{hasVideo ? "Now showing" : "Private screening"}</p>
+              <p className="truncate font-display text-2xl text-cream">{hasVideo ? room.videoTitle : "Nothing chosen yet"}</p>
               <p className="mt-0.5 text-[13px] italic text-cream/45">
                 {partner ? `${partner.name} is watching with you` : `${partnerName} hasn't arrived yet`}
               </p>
@@ -231,11 +385,13 @@ function Cinema({
               <button className="btn-chip" onClick={() => r.sendReaction("💋", "sent you a kiss 💋")}>
                 Send a kiss 💋
               </button>
-              <button className="btn-chip" onClick={() => setPickerOpen(true)}>
-                <FilmIcon className="h-4 w-4" /> Change movie
+              <button className="btn-chip border-wine-500/40" onClick={() => setPickerOpen(true)} disabled={uploading}>
+                <FilmIcon className="h-4 w-4" /> {hasVideo ? "Change Video" : "Upload Video"}
               </button>
             </div>
           </div>
+
+          <CallCard meetingUrl={room.meetingUrl} onSave={r.updateMeeting} />
         </div>
 
         <div className="lg:sticky lg:top-4 lg:h-[calc(100svh-120px)]">
@@ -249,7 +405,20 @@ function Cinema({
         </div>
       </div>
 
-      <MoviePicker open={pickerOpen} onClose={() => setPickerOpen(false)} onChoose={choose} />
+      <VideoPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        currentTitle={hasVideo ? room.videoTitle ?? "Untitled video" : null}
+        isPlaying={room.isPlaying}
+        uploading={uploading}
+        onUpload={startUpload}
+        onChooseLink={chooseLink}
+        onPlay={() => {
+          setPickerOpen(false);
+          updatePlayback({ isPlaying: true });
+        }}
+        onRemove={removeVideo}
+      />
       {namesOpen && (
         <NamesDialog
           names={names}

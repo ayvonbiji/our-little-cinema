@@ -125,6 +125,31 @@ export function InviteCard({ link, code, partnerName, onClose }: { link: string;
 
 // ── Who's watching? ──────────────────────────────────────────────────────
 export function WhoIsWatching({ names, lastName, onPick }: { names: CoupleNames; lastName: string | null; onPick: (name: string) => void }) {
+  const [chooseAgain, setChooseAgain] = useState(false);
+  const known = lastName && (lastName === names.one || lastName === names.two) ? lastName : null;
+
+  // Remembered on this device (until Logout): one tap to walk back in.
+  if (known && !chooseAgain) {
+    return (
+      <div className="flex min-h-[100svh] flex-col items-center justify-center px-6 text-center">
+        <p className="eyebrow animate-fadeIn">Our Little Cinema</p>
+        <h1 className="mt-4 font-display text-4xl text-cream animate-fadeIn [animation-delay:100ms] sm:text-5xl">Welcome back, {known}</h1>
+        <button
+          onClick={() => onPick(known)}
+          className="group mt-12 flex flex-col items-center gap-4 animate-fadeIn [animation-delay:220ms]"
+        >
+          <span className="flex h-28 w-28 items-center justify-center rounded-3xl bg-gradient-to-br from-wine-500 to-wine-800 font-display text-5xl text-white shadow-[0_20px_60px_-20px_rgba(197,58,79,0.8)] ring-2 ring-wine-300/60 transition duration-300 group-hover:-translate-y-1 group-hover:ring-cream/80 sm:h-36 sm:w-36">
+            {known.slice(0, 1).toUpperCase()}
+          </span>
+          <span className="btn-primary">Enter the cinema</span>
+        </button>
+        <button onClick={() => setChooseAgain(true)} className="mt-6 text-sm text-cream/45 underline-offset-4 hover:text-cream/80 hover:underline">
+          Not {known}?
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-[100svh] flex-col items-center justify-center px-6 text-center">
       <p className="eyebrow animate-fadeIn">Our Little Cinema</p>
