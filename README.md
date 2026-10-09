@@ -4,7 +4,7 @@
 
 A private website for two people in different countries. Inside one private room you get:
 
-- **💻 Our Call** (the home screen): your Microsoft Teams (or Google Meet / Zoom) meeting, saved to the room, with the chat beside it.
+- **💻 Our Call** (the home screen): a private two-person **video call built into the page** (Daily Prebuilt), with the chat beside it. A Teams / Meet / Zoom link can still be saved as an optional fallback.
 - **🎬 Watch**: one of you uploads a video and both of you watch **the same cloud copy** in sync. Play, pause and seek happen on both screens.
 - Live chat, floating reactions, "I'm here ❤️", and "Send a kiss 💋".
 
@@ -34,7 +34,28 @@ Built with **Next.js 14 · TypeScript · Tailwind CSS · Supabase (Realtime + St
 - **Sync.** Every play/pause/seek is one event stamped with a shared server clock. Each player computes "where we should be now", nudges its speed slightly for small drift, and jumps for big drift. Anyone who joins or reconnects reads the saved state and lands at the right second.
 - **Privacy.** The bucket is **private**, with no storage policies, so the browser key can't list or download anything. Only the server can create signed links, and only for a valid room code and a file inside that room's folder. The secret key lives only on the server (`SUPABASE_SECRET_KEY`, no `NEXT_PUBLIC_` prefix) and is never sent to the browser.
 
-## 💻 Our Call and Microsoft Teams embedding (please read)
+## 💻 Our Call: the built-in video call (Daily)
+
+**How it works**
+1. **Start Our Video Call ❤️** asks our server (`/api/call/token`) for a call pass. The server checks:
+   - the cinema room exists in Supabase,
+   - the name is one of that room's two names.
+
+   It then creates or reuses **one private Daily room** for that cinema room. The room is limited to **2 participants**, has no "knock to join", and its name is derived from the room code with a secret (so it can't be guessed). Finally it returns a **meeting token valid for 10 minutes**, for that room and that person only.
+2. The page shows Daily Prebuilt inside Our Call. Camera and microphone are requested **only after you press Start**, on Daily's pre-join screen.
+3. Switch to **🎬 Watch** and the call keeps going in a small floating window (same element, so it doesn't reconnect). **⤢ Back to our call** brings it back.
+4. **Leave call**, **Logout**, or closing the tab ends your side of the call.
+
+**Security model:** the app has no user accounts. Like uploads, access comes from the secret room link. A private Daily room can't be joined without a token, tokens come only from our server, and only for the room's two names. The Daily API key exists only on the server.
+
+**Setup (one time)**
+1. Create a free account at [daily.co](https://www.daily.co) and copy your API key from the dashboard (Developers).
+2. Vercel → Settings → Environment Variables → `DAILY_API_KEY` = your key (mark it **Sensitive**; never `NEXT_PUBLIC_`). Redeploy.
+3. In the Daily dashboard, check your plan/billing settings: **10,000 free participant-minutes a month**, then $0.004 per participant-minute (a 1-hour call for two = 120 minutes). Free usage isn't automatically capped, so decide whether to add a card. Daily branding shows unless payment info is on file.
+
+No Supabase changes are needed.
+
+## 💻 Optional meeting links and Microsoft Teams embedding
 
 1. Paste the Teams link and click **Save Meeting**. It's stored on the room (`meeting_url`), so your partner gets it automatically.
 2. **Enter Our Call ❤️** first asks the app's server (`/api/meeting/check`) whether the meeting page allows other websites to show it. Browsers silently refuse to show pages that send `X-Frame-Options` or a `frame-ancestors` rule, and a page can't detect that refusal itself.
@@ -84,6 +105,7 @@ The app deletes the old file whenever you **Change** or **Remove** a video, so s
 | `SUPABASE_SECRET_KEY` | your **secret** key `sb_secret_…` (mark it *Sensitive*) | **no, server only** |
 | `NEXT_PUBLIC_PERSON_ONE` / `_TWO` | `Ayvon` / `Aksa` | yes |
 | `NEXT_PUBLIC_MAX_UPLOAD_MB` | `50` on Free (optional) | yes |
+| `DAILY_API_KEY` | Daily API key for the built-in call (mark *Sensitive*) | **no, server only** |
 
 **Never** create `NEXT_PUBLIC_SUPABASE_SECRET_KEY` or `NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY`. Anything starting with `NEXT_PUBLIC_` is sent to every visitor.
 
@@ -132,10 +154,12 @@ app/
   api/video/url/route.ts      checks room + path → signed playback link
   api/video/cleanup/route.ts  deletes replaced/removed videos
   api/meeting/check/route.ts  can this meeting page be shown inside ours?
+  api/call/token/route.ts     checks room + name → private 2-person Daily room + 10-min token
 components/
   VideoPlayer.tsx             custom player + sync engine
   VideoPicker.tsx             "What are we watching?": Upload / Link / Currently watching
-  CallStage.tsx               Our Call: save link, in-page meeting, honest fallback
+  CallStage.tsx               Our Call: built-in Daily video call (start, pre-join, leave, errors)
+  ExternalMeeting.tsx         optional Teams / Meet / Zoom link with honest embed fallback
   UploadProgressCard.tsx      background upload progress / Video ready ❤️
   ChatPanel.tsx, RoomBits.tsx, FloatingReactions.tsx, …
 hooks/
@@ -144,6 +168,7 @@ hooks/
 lib/
   upload.ts                   resumable upload straight to Supabase Storage
   supabaseAdmin.ts            SERVER-ONLY client (secret key)
+  daily.ts                    SERVER-ONLY Daily REST helpers (DAILY_API_KEY)
   storageConfig.ts, videos.ts, clock.ts, identity.ts, …
 supabase/
   schema.sql                  full schema (new projects)

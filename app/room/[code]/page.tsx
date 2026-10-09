@@ -97,6 +97,7 @@ function Cinema({
   const [link, setLink] = useState("");
   const [upload, setUpload] = useState<LocalUpload | null>(null);
   const [readyTitle, setReadyTitle] = useState<string | null>(null);
+  const [inCall, setInCall] = useState(false);
   const uploadRef = useRef<UploadHandle | null>(null);
   const cancelledRef = useRef(false);
   const lastFileRef = useRef<File | null>(null);
@@ -425,11 +426,35 @@ function Cinema({
           />
 
           {/* 💻 Our Call: kept mounted so an in-page call keeps going while you watch */}
+          {/* While you watch, a live call floats in the corner (same element, only restyled, so it never reconnects). */}
           <section
             aria-label="Our Call"
-            className={`${mode === "call" ? "" : "hidden"} relative h-[68svh] min-h-[380px] w-full overflow-hidden rounded-2xl bg-ink-900 shadow-[0_40px_120px_-30px_rgba(122,26,44,0.55)] ring-1 ring-white/[0.06] sm:h-auto sm:min-h-[460px] sm:aspect-video`}
+            className={
+              mode === "call"
+                ? "relative h-[68svh] min-h-[380px] w-full overflow-hidden rounded-2xl bg-ink-900 shadow-[0_40px_120px_-30px_rgba(122,26,44,0.55)] ring-1 ring-white/[0.06] sm:h-auto sm:min-h-[460px] sm:aspect-video"
+                : inCall
+                  ? "fixed bottom-20 right-3 z-40 h-[180px] w-[260px] overflow-hidden rounded-xl bg-ink-900 shadow-2xl ring-1 ring-wine-400/40 sm:bottom-24 sm:right-6 sm:h-[210px] sm:w-[340px]"
+                  : "hidden"
+            }
           >
-            <CallStage meetingUrl={room.meetingUrl} partnerName={partnerName} onSave={saveMeeting} />
+            <CallStage
+              code={code}
+              myName={me.name}
+              partnerName={partnerName}
+              partnerOnline={Boolean(partner)}
+              meetingUrl={room.meetingUrl}
+              onSaveMeeting={saveMeeting}
+              onInCallChange={setInCall}
+              compact={mode !== "call"}
+            />
+            {mode !== "call" && inCall && (
+              <button
+                onClick={() => setMode("call")}
+                className="absolute left-2 top-2 z-20 rounded-full bg-black/65 px-2.5 py-1 text-[11px] font-medium text-cream/90 backdrop-blur hover:bg-wine-600"
+              >
+                ⤢ Back to our call
+              </button>
+            )}
           </section>
 
           {/* 🎬 Watch */}
