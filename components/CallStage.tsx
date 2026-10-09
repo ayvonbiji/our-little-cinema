@@ -10,6 +10,9 @@ interface Props {
   onSave: (url: string | null) => Promise<void>;
 }
 
+/** Services whose ordinary join links must never be put in an iframe. */
+const NEVER_EMBED = ["Google Meet", "Zoom"];
+
 type Embed = { state: "idle" } | { state: "checking" } | { state: "embedded"; verified: boolean } | { state: "blocked" };
 
 const CallIcon = ({ className = "h-6 w-6" }: { className?: string }) => (
@@ -75,6 +78,13 @@ export default function CallStage({ meetingUrl, partnerName, onSave }: Props) {
 
   const enter = async () => {
     if (!meetingUrl) return;
+    // A normal Google Meet or Zoom join link is never loaded into an iframe:
+    // both services refuse to be shown inside other websites, and neither
+    // offers a public SDK that embeds an existing meeting link in a web page.
+    if (NEVER_EMBED.includes(service)) {
+      setEmbed({ state: "blocked" });
+      return;
+    }
     setEmbed({ state: "checking" });
     try {
       const res = await fetch(`/api/meeting/check?url=${encodeURIComponent(meetingUrl)}`, { cache: "no-store" });

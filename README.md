@@ -42,6 +42,8 @@ Built with **Next.js 14 · TypeScript · Tailwind CSS · Supabase (Realtime + St
    - If the service forbids it, the page says *"Microsoft Teams doesn't allow this meeting to be embedded here."* It then offers **Open Teams** (new tab) and **Open in the Teams app** (`msteams:` link). The cinema, chat and room stay open.
    - If the check can't tell, it tries in-page and always shows a "Not loading? Open Teams" bar.
 
+**Google Meet:** a normal `meet.google.com` link is **never** loaded into an iframe. Google refuses framing, and its current public developer tools (Meet REST API, Meet add-ons SDK, Meet Media API) don't include anything that embeds a meeting inside your own website. The room keeps the link and offers **Open Google Meet** in a new tab.
+
 **What to expect:** Microsoft doesn't support showing normal Teams meeting links inside other websites. Its supported way to put a Teams meeting inside your own web page is **Azure Communication Services (ACS) Teams interoperability**. Google Meet also refuses framing, and Zoom needs its own Meeting SDK. So in practice the honest fallback will show for these links.
 
 ### Want the Teams call truly inside the page? (optional, needs Microsoft setup)

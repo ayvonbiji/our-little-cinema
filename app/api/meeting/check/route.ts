@@ -20,6 +20,11 @@ export async function GET(req: Request) {
   const check = checkMeetingUrl(searchParams.get("url") ?? "");
   if (!check.ok) return jsonError(check.reason);
 
+  // Known: Google Meet and Zoom join links can't be embedded in other sites.
+  if (check.service === "Google Meet" || check.service === "Zoom") {
+    return jsonOk({ embeddable: false, service: check.service, reason: `${check.service} links can't be shown inside other websites.` });
+  }
+
   const ourOrigin = new URL(req.url).origin;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7000);
