@@ -98,6 +98,7 @@ function Cinema({
   const [upload, setUpload] = useState<LocalUpload | null>(null);
   const [readyTitle, setReadyTitle] = useState<string | null>(null);
   const [inCall, setInCall] = useState(false);
+  const [callNonce, setCallNonce] = useState(0);
   const uploadRef = useRef<UploadHandle | null>(null);
   const cancelledRef = useRef(false);
   const lastFileRef = useRef<File | null>(null);
@@ -129,6 +130,12 @@ function Cinema({
     },
     [modeKey],
   );
+  /** "Our Call" always means our built-in Daily call screen. */
+  const openCall = useCallback(() => {
+    setMode("call");
+    setCallNonce((n) => n + 1);
+  }, [setMode]);
+
   // First visit: Our Call is home, unless there's only a video and no call yet.
   const roomLoaded = Boolean(room);
   useEffect(() => {
@@ -379,7 +386,7 @@ function Cinema({
                   key={m}
                   role="tab"
                   aria-selected={mode === m}
-                  onClick={() => setMode(m)}
+                  onClick={() => (m === "call" ? openCall() : setMode(m))}
                   className={`relative rounded-full px-5 py-2 text-[14px] font-semibold transition ${
                     mode === m ? "bg-wine-500 text-white shadow-[0_6px_24px_-8px_rgba(197,58,79,0.9)]" : "text-cream/60 hover:text-cream"
                   }`}
@@ -446,10 +453,11 @@ function Cinema({
               onSaveMeeting={saveMeeting}
               onInCallChange={setInCall}
               compact={mode !== "call"}
+              openNonce={callNonce}
             />
             {mode !== "call" && inCall && (
               <button
-                onClick={() => setMode("call")}
+                onClick={openCall}
                 className="absolute left-2 top-2 z-20 rounded-full bg-black/65 px-2.5 py-1 text-[11px] font-medium text-cream/90 backdrop-blur hover:bg-wine-600"
               >
                 ⤢ Back to our call
@@ -524,7 +532,7 @@ function Cinema({
           >
             <FilmIcon className="hidden h-4 w-4 sm:block" /> {uploading ? "Uploading…" : hasVideo ? "Change Video" : "Upload Video"}
           </button>
-          <button className={`btn-chip ${mode === "call" ? "border-wine-500/50 bg-wine-500/15" : ""}`} onClick={() => setMode("call")}>
+          <button className={`btn-chip ${mode === "call" ? "border-wine-500/50 bg-wine-500/15" : ""}`} onClick={openCall}>
             Our Call
           </button>
           <button className="btn-chip" onClick={copyLink}>

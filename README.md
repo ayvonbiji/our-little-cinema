@@ -53,7 +53,10 @@ Built with **Next.js 14 · TypeScript · Tailwind CSS · Supabase (Realtime + St
 2. Vercel → Settings → Environment Variables → `DAILY_API_KEY` = your key (mark it **Sensitive**; never `NEXT_PUBLIC_`). Redeploy.
 3. In the Daily dashboard, check your plan/billing settings: **10,000 free participant-minutes a month**, then $0.004 per participant-minute (a 1-hour call for two = 120 minutes). Free usage isn't automatically capped, so decide whether to add a card. Daily branding shows unless payment info is on file.
 
-No Supabase changes are needed.
+No Supabase changes are needed. The call checks the room with the public key only, so it does **not** depend on `SUPABASE_SECRET_KEY`.
+
+**Check the setup any time:** open `https://<your-site>/api/call/status`. It returns only yes/no results, never keys:
+`{"commit":"…","dailyApiKey":"ok","roomLookup":"ok","ready":true}`. `dailyApiKey` can also say `missing` (not set in Vercel), `rejected` (wrong key) or `unreachable`.
 
 ## 💻 Optional meeting links and Microsoft Teams embedding
 
@@ -155,6 +158,7 @@ app/
   api/video/cleanup/route.ts  deletes replaced/removed videos
   api/meeting/check/route.ts  can this meeting page be shown inside ours?
   api/call/token/route.ts     checks room + name → private 2-person Daily room + 10-min token
+  api/call/status/route.ts    safe yes/no health check of the call setup
 components/
   VideoPlayer.tsx             custom player + sync engine
   VideoPicker.tsx             "What are we watching?": Upload / Link / Currently watching

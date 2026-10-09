@@ -16,6 +16,8 @@ interface Props {
   onInCallChange: (inCall: boolean) => void;
   /** Smaller layout while floating over the movie. */
   compact?: boolean;
+  /** Changes every time someone clicks "Our Call": always brings back the Daily call screen. */
+  openNonce?: number;
 }
 
 type CallState =
@@ -78,7 +80,7 @@ function fatalMessage(e: DailyEventObjectFatalError): { message: string; canRetr
  * (on Daily's pre-join screen). A saved Teams / Meet / Zoom link stays
  * available as an optional fallback.
  */
-export default function CallStage({ code, myName, partnerName, partnerOnline, meetingUrl, onSaveMeeting, onInCallChange, compact = false }: Props) {
+export default function CallStage({ code, myName, partnerName, partnerOnline, meetingUrl, onSaveMeeting, onInCallChange, compact = false, openNonce = 0 }: Props) {
   const [state, setState] = useState<CallState>({ kind: "idle" });
   const [view, setView] = useState<"call" | "link">("call");
   const [notice, setNotice] = useState<string | null>(null);
@@ -86,6 +88,14 @@ export default function CallStage({ code, myName, partnerName, partnerOnline, me
   const callRef = useRef<DailyCall | null>(null);
 
   const live = state.kind === "connecting" || state.kind === "prejoin" || state.kind === "in-call";
+
+  // Daily is the default: clicking "Our Call" always returns here, even if an
+  // external meeting link (Teams / Meet / Zoom) was opened earlier.
+  useEffect(() => {
+    if (!openNonce) return;
+    setView("call");
+    setState((s) => (s.kind === "error" ? { kind: "idle" } : s));
+  }, [openNonce]);
   const frameVisible = state.kind === "prejoin" || state.kind === "in-call";
   useEffect(() => onInCallChange(state.kind === "in-call"), [state.kind, onInCallChange]);
 

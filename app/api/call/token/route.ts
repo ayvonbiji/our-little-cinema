@@ -1,4 +1,4 @@
-import { getRoomRow } from "@/lib/supabaseAdmin";
+import { lookupRoom } from "@/lib/roomLookup";
 import { jsonError, jsonOk } from "@/lib/apiHelpers";
 import { ROOM_CODE_RE } from "@/lib/storageConfig";
 import { DailyError, createMeetingToken, ensurePrivateRoom } from "@/lib/daily";
@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   if (!name || name.length > 40) return jsonError("Invalid name");
 
   try {
-    const room = await getRoomRow(code);
+    const room = await lookupRoom(code);
     if (!room) return jsonError("Room not found", 404);
     const allowed = [room.names?.one, room.names?.two].filter(Boolean);
     if (!allowed.includes(name)) return jsonError("Only the two people of this room can join its call.", 403);
@@ -39,6 +39,8 @@ export async function POST(req: Request) {
     return jsonOk({ url: dailyRoom.url, token });
   } catch (e) {
     if (e instanceof DailyError) return jsonError(e.message, e.status);
-    return jsonError("Couldn't start the call. Please try again.", 500);
+    console.error("[call/token]", e);
+    const detail = e instanceof Error ? e.message : "unknown error";
+    return jsonError(`Couldn't start the call (${detail}).`, 500);
   }
 }
