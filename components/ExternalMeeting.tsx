@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { checkMeetingUrl, meetingService, teamsAppLink } from "@/lib/videos";
 import { PencilIcon } from "./Icons";
 
@@ -11,11 +11,6 @@ interface Props {
   /** Back to the built-in video call. */
   onBack: () => void;
 }
-
-/** Services whose ordinary join links must never be put in an iframe. */
-const NEVER_EMBED = ["Google Meet", "Zoom"];
-
-type Embed = { state: "idle" } | { state: "checking" } | { state: "embedded"; verified: boolean } | { state: "blocked" };
 
 const CallIcon = ({ className = "h-6 w-6" }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
@@ -32,24 +27,16 @@ const ExternalIcon = ({ className = "h-4 w-4" }: { className?: string }) => (
 );
 
 /**
- * Optional fallback: an external Teams / Meet / Zoom link saved on the room.
- *  1. Paste & save a Teams (or Meet / Zoom) link. It's stored on the room, so both see it.
- *  2. "Enter Our Call ❤️" tries to show the meeting inside this page.
- *  3. If the service forbids being shown inside other websites (Teams normally does),
- *     we say so honestly and offer "Open Teams" in a new tab, and this page,
- *     the chat and the room all stay right here.
+ * Optional alternative to the built-in Daily call: a Teams / Meet / Zoom link saved on
+ * the room. Ordinary meeting links are never put in an iframe (those services refuse
+ * to be shown inside other websites); they always open in a new tab, so the cinema,
+ * the chat and the room stay right here.
  */
 export default function ExternalMeeting({ meetingUrl, partnerName, onSave, onBack }: Props) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [embed, setEmbed] = useState<Embed>({ state: "idle" });
-
-  // A different link (or removal) resets the in-page view.
-  useEffect(() => {
-    setEmbed({ state: "idle" });
-  }, [meetingUrl]);
 
   const service = meetingService(meetingUrl) || "Microsoft Teams";
   const appLink = teamsAppLink(meetingUrl);
@@ -76,26 +63,6 @@ export default function ExternalMeeting({ meetingUrl, partnerName, onSave, onBac
       return;
     }
     save(c.url);
-  };
-
-  const enter = async () => {
-    if (!meetingUrl) return;
-    // A normal Google Meet or Zoom join link is never loaded into an iframe:
-    // both services refuse to be shown inside other websites, and neither
-    // offers a public SDK that embeds an existing meeting link in a web page.
-    if (NEVER_EMBED.includes(service)) {
-      setEmbed({ state: "blocked" });
-      return;
-    }
-    setEmbed({ state: "checking" });
-    try {
-      const res = await fetch(`/api/meeting/check?url=${encodeURIComponent(meetingUrl)}`, { cache: "no-store" });
-      const data = (await res.json()) as { embeddable?: boolean | null };
-      if (data.embeddable === false) setEmbed({ state: "blocked" });
-      else setEmbed({ state: "embedded", verified: data.embeddable === true });
-    } catch {
-      setEmbed({ state: "embedded", verified: false });
-    }
   };
 
   const OpenButtons = ({ compact = false }: { compact?: boolean }) => (
@@ -161,60 +128,6 @@ export default function ExternalMeeting({ meetingUrl, partnerName, onSave, onBac
     );
   }
 
-  // ── 3a. In-page meeting ───────────────────────────────────────────────
-  if (embed.state === "embedded") {
-    return (
-      <div className="flex h-full w-full flex-col bg-black">
-        <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] bg-ink-900/90 px-3 py-2">
-          <p className="flex min-w-0 items-center gap-2 truncate text-[13px] text-cream/80">
-            <span className="h-2 w-2 animate-pulseDot rounded-full bg-emerald-400" /> Our Call · {service}
-          </p>
-          <div className="flex items-center gap-1.5">
-            <span className="hidden text-[11.5px] text-cream/40 sm:inline">Not loading?</span>
-            <OpenButtons compact />
-            <button className="btn-chip" onClick={() => setEmbed({ state: "idle" })}>
-              Leave
-            </button>
-          </div>
-        </div>
-        <iframe
-          title="Our Call"
-          src={meetingUrl}
-          className="min-h-0 w-full flex-1 bg-black"
-          allow="camera; microphone; display-capture; autoplay; fullscreen; clipboard-write"
-          allowFullScreen
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    );
-  }
-
-  // ── 3b. The service refuses to be shown inside other sites ───────────
-  if (embed.state === "blocked") {
-    return (
-      <div className="relative flex h-full w-full items-center justify-center overflow-y-auto bg-[radial-gradient(ellipse_at_top,rgba(122,26,44,0.3),transparent_60%)] px-5 py-10">
-        <BackLink />
-        <div className="max-w-lg text-center animate-fadeIn">
-          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.05] text-cream/70 ring-1 ring-white/10">
-            <CallIcon className="h-7 w-7" />
-          </span>
-          <p className="mt-5 font-display text-2xl leading-snug text-cream sm:text-3xl">
-            {service} doesn&apos;t allow this meeting to be embedded here.
-          </p>
-          <p className="mx-auto mt-3 max-w-md text-[13.5px] leading-relaxed text-cream/55">
-            Open it beside this page. Our cinema, the chat and {partnerName} stay right here, so you can switch back any time.
-          </p>
-          <div className="mt-6">
-            <OpenButtons />
-          </div>
-          <button className="mt-5 text-[12.5px] text-cream/40 underline-offset-4 hover:text-cream/75 hover:underline" onClick={() => setEmbed({ state: "idle" })}>
-            Back
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   // ── 2. Saved meeting, ready to enter ──────────────────────────────────
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-y-auto bg-[radial-gradient(ellipse_at_center,rgba(122,26,44,0.38),transparent_65%)] px-5 py-10">
@@ -223,16 +136,10 @@ export default function ExternalMeeting({ meetingUrl, partnerName, onSave, onBac
         <p className="eyebrow">{service}</p>
         <h2 className="mt-3 font-display text-4xl text-cream sm:text-5xl">Our meeting link</h2>
         <p className="mt-3 text-[13.5px] italic text-cream/50">Saved to this room for both of you.</p>
-        {/* Default: open the meeting in its own tab (Teams / Meet / Zoom refuse to be shown inside other sites). */}
-        <a href={meetingUrl} target="_blank" rel="noopener noreferrer" className="btn-primary mt-8 px-8 py-3.5">
-          Open in {service === "Microsoft Teams" ? "Teams" : service} ↗
-        </a>
-        <p className="mt-2 text-[12px] text-cream/35">Opens in a new tab; this cinema and the chat stay here.</p>
-        {!NEVER_EMBED.includes(service) && (
-          <button className="mt-3 text-[12px] text-cream/35 underline-offset-4 hover:text-cream/70 hover:underline" onClick={enter} disabled={embed.state === "checking"}>
-            {embed.state === "checking" ? "Checking…" : "Try showing it inside this page"}
-          </button>
-        )}
+        <div className="mt-8">
+          <OpenButtons />
+        </div>
+        <p className="mt-3 text-[12px] text-cream/35">Opens in a new tab; this cinema and the chat stay here.</p>
         <div className="mt-6 flex items-center justify-center gap-3 text-[12.5px] text-cream/40">
           <button className="inline-flex items-center gap-1 hover:text-cream/80" onClick={() => {
             setValue(meetingUrl);

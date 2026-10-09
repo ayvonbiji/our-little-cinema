@@ -1,6 +1,7 @@
 import { jsonOk } from "@/lib/apiHelpers";
 import { lookupRoom } from "@/lib/roomLookup";
-import { selfTest } from "@/lib/daily";
+import { createMeetingToken, ensurePrivateRoom, selfTest } from "@/lib/daily";
+import { ROOM_CODE_RE } from "@/lib/storageConfig";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,28 @@ export async function GET(req: Request) {
       selftest = { createRoom: `error (${e instanceof Error ? e.message : "unknown"})`, createToken: "not run", deleteRoom: "not run" };
     }
   }
+  // ?room=<code> → run the exact server path "Start Our Video Call" uses for that room
+  // (room lookup → private Daily room → meeting token). Reports only ok / failed; the
+  // token itself is discarded, never returned.
+  const roomParam = (new URL(req.url).searchParams.get("room") || "").toLowerCase();
+  let roomPath: Record<string, string> | undefined;
+  if (roomParam && ROOM_CODE_RE.test(roomParam) && daily === "ok") {
+    roomPath = { roomLookup: "not run", dailyRoom: "not run", meetingToken: "not run" };
+    try {
+      const room = await lookupRoom(roomParam);
+      roomPath.roomLookup = room ? `ok (names: ${[room.names?.one, room.names?.two].filter(Boolean).length})` : "room not found";
+      if (room) {
+        const dr = await ensurePrivateRoom(roomParam);
+        roomPath.dailyRoom = `ok (${dr.privacy}, max ${dr.config?.max_participants ?? "?"}, host ${new URL(dr.url).host})`;
+        await createMeetingToken(dr.name, room.names?.one || "Ayvon");
+        roomPath.meetingToken = "ok";
+      }
+    } catch (e) {
+      const step = roomPath.roomLookup === "not run" ? "roomLookup" : roomPath.dailyRoom === "not run" ? "dailyRoom" : "meetingToken";
+      roomPath[step] = `failed (${e instanceof Error ? e.message : "error"})`;
+    }
+  }
+
   const deepOk = !selftest || (selftest.createRoom.startsWith("ok") && selftest.createToken === "ok");
-  return jsonOk({ commit, dailyApiKey: daily, roomLookup: supabase, selftest, ready: daily === "ok" && supabase === "ok" && deepOk });
+  return jsonOk({ commit, dailyApiKey: daily, roomLookup: supabase, selftest, roomPath, ready: daily === "ok" && supabase === "ok" && deepOk });
 }

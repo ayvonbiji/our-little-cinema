@@ -25,7 +25,7 @@ type CallState =
   | { kind: "connecting" } // getting a call pass
   | { kind: "prejoin" } // Daily's pre-join screen: camera/mic check, then "Join"
   | { kind: "in-call" }
-  | { kind: "error"; message: string; canRetry: boolean };
+  | { kind: "error"; message: string; canRetry: boolean; detail?: string; reload?: boolean };
 
 const CallIcon = ({ className = "h-6 w-6" }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
@@ -53,6 +53,24 @@ const THEME = {
     supportiveText: "#b4a9b0",
   },
 };
+
+/** Turn whatever a failed step threw into a short, readable reason (never secrets). */
+function reasonOf(err: unknown): string {
+  if (!err) return "no reason given";
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message || err.name;
+  if (typeof err === "object") {
+    const o = err as { errorMsg?: unknown; msg?: unknown; message?: unknown; type?: unknown; error?: { type?: unknown; msg?: unknown } };
+    const parts = [o.error?.type ?? o.type, o.errorMsg ?? o.error?.msg ?? o.msg ?? o.message].filter((x) => typeof x === "string" && x);
+    if (parts.length) return parts.join(": ");
+    try {
+      return JSON.stringify(err).slice(0, 160);
+    } catch {
+      return "unknown error";
+    }
+  }
+  return String(err);
+}
 
 function fatalMessage(e: DailyEventObjectFatalError): { message: string; canRetry: boolean } {
   switch (e.error?.type) {
@@ -116,27 +134,68 @@ export default function CallStage({ code, myName, partnerName, partnerOnline, me
   // Leaving the room (logout, closing the tab, navigating away) ends the call.
   useEffect(() => () => void teardown(), [teardown]);
 
+  // Each Start gets an id; results of an older attempt (or one you cancelled) are ignored.
+  const attemptRef = useRef(0);
+
+  const fail = (attempt: number, message: string, detail?: string, opts: { canRetry?: boolean; reload?: boolean } = {}) => {
+    if (attempt !== attemptRef.current) return;
+    void teardown();
+    setNotice(null);
+    setState({ kind: "error", message, detail, canRetry: opts.canRetry ?? true, reload: opts.reload });
+  };
+
+  /**
+   * Start Our Video Call: four separate steps, each with its own honest error:
+   *   1. ask our server for a call pass   2. load Daily's library
+   *   3. create the Daily Prebuilt frame   4. join (Daily shows its pre-join screen)
+   */
   const start = async () => {
+    const attempt = ++attemptRef.current;
     setNotice(null);
     setState({ kind: "connecting" });
+
+    // 1. Call pass from our server
+    let data: { url?: string; token?: string; error?: string } = {};
+    let status = 0;
     try {
       const res = await fetch("/api/call/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, name: myName }),
       });
-      const data = (await res.json().catch(() => ({}))) as { url?: string; token?: string; error?: string };
-      if (!res.ok || !data.url || !data.token) {
-        setState({ kind: "error", message: data.error || "Couldn't start the call. Please try again.", canRetry: res.status !== 403 });
-        return;
-      }
+      status = res.status;
+      data = await res.json().catch(() => ({}));
+    } catch (e) {
+      return fail(attempt, "Couldn't reach our website's server to start the call. Check your internet connection and try again.", `step 1 (call pass): ${reasonOf(e)}`);
+    }
+    if (attempt !== attemptRef.current) return;
+    if (status !== 200 || !data.url || !data.token) {
+      return fail(attempt, data.error || "Our server couldn't create a call pass.", `step 1 (call pass): HTTP ${status}`, { canRetry: status !== 403 });
+    }
 
-      const Daily = (await import("@daily-co/daily-js")).default;
+    // 2. Daily's library (a separate file the browser downloads on demand)
+    let Daily: typeof import("@daily-co/daily-js").default;
+    try {
+      Daily = (await import("@daily-co/daily-js")).default;
+    } catch (e) {
+      const stale = /chunk|Loading.*failed|dynamically imported module/i.test(reasonOf(e));
+      return fail(
+        attempt,
+        stale ? "This page was updated since you opened it. Reload the page, then start the call again." : "Couldn't load the video call software in this browser.",
+        `step 2 (load Daily library): ${reasonOf(e)}`,
+        { reload: true },
+      );
+    }
+    if (attempt !== attemptRef.current) return;
+
+    // 3. Daily Prebuilt frame inside our page
+    let call: DailyCall;
+    try {
       await teardown();
       const stale = Daily.getCallInstance();
       if (stale && !stale.isDestroyed()) await withTimeout(stale.destroy(), 3000).catch(() => {});
       if (!frameHost.current) return;
-      const call = Daily.createFrame(frameHost.current, {
+      call = Daily.createFrame(frameHost.current, {
         // Only one call ever lives on this page; this just stops a half-closed
         // previous attempt from blocking a fresh one.
         allowMultipleCallInstances: true,
@@ -145,47 +204,61 @@ export default function CallStage({ code, myName, partnerName, partnerOnline, me
         iframeStyle: { width: "100%", height: "100%", border: "0", display: "block", background: "#07060a" },
         theme: THEME,
       });
-      callRef.current = call;
-      setState({ kind: "prejoin" });
+    } catch (e) {
+      return fail(attempt, "Couldn't open the video call window.", `step 3 (create Daily frame): ${reasonOf(e)}`);
+    }
+    callRef.current = call;
+    setState({ kind: "prejoin" });
 
-      call
-        .on("joined-meeting", () => setState({ kind: "in-call" }))
-        .on("left-meeting", () => {
-          void teardown();
-          setNotice(null);
-          setState((s) => (s.kind === "error" ? s : { kind: "idle" }));
-        })
-        .on("error", (e) => {
-          const { message, canRetry } = fatalMessage(e as DailyEventObjectFatalError);
-          void teardown();
-          setState({ kind: "error", message, canRetry });
-        })
-        .on("camera-error", (e) => {
-          const ce = e as DailyEventObjectCameraError;
-          if (ce.error?.type === "permissions") {
-            setNotice("Camera or microphone is blocked. Allow them in your browser's site settings, then rejoin.");
-          } else if (ce.error?.type === "cam-in-use" || ce.error?.type === "mic-in-use" || ce.error?.type === "cam-mic-in-use") {
-            setNotice("Your camera or microphone is being used by another app. Close it and try again.");
-          } else if (ce.error?.type === "not-found" || ce.error?.type === "undefined-mediadevices") {
-            setNotice("No camera or microphone was found on this device.");
-          } else {
-            setNotice("There's a problem with your camera or microphone.");
-          }
-        })
-        .on("network-connection", (e) => {
-          const ne = e as DailyEventObjectNetworkConnectionEvent;
-          if (ne.event === "interrupted") setNotice("Connection lost, reconnecting…");
-          else if (ne.event === "connected") setNotice(null);
-        });
+    let fatalShown = false;
+    call
+      .on("joined-meeting", () => attempt === attemptRef.current && setState({ kind: "in-call" }))
+      .on("left-meeting", () => {
+        if (attempt !== attemptRef.current) return;
+        void teardown();
+        setNotice(null);
+        setState((s) => (s.kind === "error" ? s : { kind: "idle" }));
+      })
+      .on("error", (e) => {
+        fatalShown = true;
+        const ev = e as DailyEventObjectFatalError;
+        const { message, canRetry } = fatalMessage(ev);
+        fail(attempt, message, `Daily: ${reasonOf(ev)}`, { canRetry });
+      })
+      .on("load-attempt-failed", (e) => {
+        if (attempt === attemptRef.current) setNotice(`Still loading the call… (${reasonOf(e)})`);
+      })
+      .on("camera-error", (e) => {
+        const ce = e as DailyEventObjectCameraError;
+        if (ce.error?.type === "permissions") {
+          setNotice("Camera or microphone is blocked. Allow them in your browser's site settings (the icon left of the address bar), then rejoin.");
+        } else if (ce.error?.type === "cam-in-use" || ce.error?.type === "mic-in-use" || ce.error?.type === "cam-mic-in-use") {
+          setNotice("Your camera or microphone is being used by another app. Close it and try again.");
+        } else if (ce.error?.type === "not-found" || ce.error?.type === "undefined-mediadevices") {
+          setNotice("No camera or microphone was found on this device.");
+        } else {
+          setNotice("There's a problem with your camera or microphone.");
+        }
+      })
+      .on("network-connection", (e) => {
+        const ne = e as DailyEventObjectNetworkConnectionEvent;
+        if (ne.event === "interrupted") setNotice("Connection lost, reconnecting…");
+        else if (ne.event === "connected") setNotice(null);
+      });
 
+    // 4. Join: Daily shows its pre-join screen (camera/mic check), then joins.
+    try {
       await call.join({ url: data.url, token: data.token });
-    } catch {
-      await teardown();
-      setState({ kind: "error", message: "The video call service can't be reached right now. Check your connection and try again.", canRetry: true });
+    } catch (e) {
+      // Cancelled / left / replaced by a newer attempt → not an error.
+      // A fatal Daily error was already shown with its real reason above.
+      if (attempt !== attemptRef.current || fatalShown) return;
+      fail(attempt, "Daily couldn't open the call.", `step 4 (join): ${reasonOf(e)}`);
     }
   };
 
   const leave = async () => {
+    attemptRef.current++; // whatever the pending join() does now is not an error
     setNotice(null);
     setState({ kind: "idle" });
     const call = callRef.current;
@@ -286,11 +359,22 @@ export default function CallStage({ code, myName, partnerName, partnerOnline, me
           <div className="max-w-md text-center animate-fadeIn">
             <p className="font-display text-2xl text-cream">The call couldn&apos;t start</p>
             <p className="mt-3 text-[13.5px] leading-relaxed text-cream/60">{state.message}</p>
+            {state.detail && (
+              <p className="mx-auto mt-3 max-w-sm break-words rounded-lg bg-white/[0.04] px-3 py-2 font-mono text-[11px] leading-relaxed text-cream/45" data-testid="call-error-detail">
+                {state.detail}
+              </p>
+            )}
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              {state.canRetry && (
-                <button className="btn-primary" onClick={start}>
-                  Try again
+              {state.reload ? (
+                <button className="btn-primary" onClick={() => window.location.reload()}>
+                  Reload page
                 </button>
+              ) : (
+                state.canRetry && (
+                  <button className="btn-primary" onClick={start}>
+                    Try again
+                  </button>
+                )
               )}
               <button className="btn-ghost" onClick={() => setState({ kind: "idle" })}>
                 Back
