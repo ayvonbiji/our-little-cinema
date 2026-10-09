@@ -69,7 +69,7 @@ interface DailyRoom {
 }
 
 /** Settings every cinema call room must have. */
-const ROOM_PROPERTIES = {
+export const ROOM_PROPERTIES = {
   max_participants: 2, // just the two of you
   enable_knocking: false, // no "ask to join" for people without a token
   enable_prejoin_ui: true, // camera/mic are requested on the pre-join screen, after you click
@@ -119,4 +119,37 @@ export async function createMeetingToken(roomName: string, userName: string): Pr
   });
   if (res.status !== 200 || !res.body.token) throw new DailyError("Couldn't create a call pass.", 502);
   return res.body.token;
+}
+
+/**
+ * Self-test against the real Daily API: create a throwaway private room with the
+ * exact settings real calls use, issue a token for it, then delete it.
+ * Proves the key, the room settings and token creation all work, without a call.
+ */
+export async function selfTest(): Promise<{ createRoom: string; createToken: string; deleteRoom: string; roomDomain?: string }> {
+  const name = `olc-selftest-${Math.random().toString(36).slice(2, 10)}`;
+  const out: { createRoom: string; createToken: string; deleteRoom: string; roomDomain?: string } = {
+    createRoom: "not run",
+    createToken: "not run",
+    deleteRoom: "not run",
+  };
+  const created = await daily<DailyRoom & { info?: string; error?: string }>(`/rooms`, {
+    method: "POST",
+    body: JSON.stringify({ name, privacy: "private", properties: { ...ROOM_PROPERTIES, exp: Math.floor(Date.now() / 1000) + 300 } }),
+  });
+  if (created.status !== 200 || !created.body.url) {
+    out.createRoom = `failed (${created.status}${created.body.info ? `: ${created.body.info}` : created.body.error ? `: ${created.body.error}` : ""})`;
+    return out;
+  }
+  out.createRoom = `ok (privacy=${created.body.privacy}, max_participants=${created.body.config?.max_participants})`;
+  out.roomDomain = new URL(created.body.url).host;
+  try {
+    await createMeetingToken(name, "SelfTest");
+    out.createToken = "ok";
+  } catch (e) {
+    out.createToken = `failed (${e instanceof Error ? e.message : "error"})`;
+  }
+  const del = await daily<unknown>(`/rooms/${name}`, { method: "DELETE" });
+  out.deleteRoom = del.status === 200 ? "ok" : `failed (${del.status})`;
+  return out;
 }

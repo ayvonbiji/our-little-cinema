@@ -57,6 +57,7 @@ No Supabase changes are needed. The call checks the room with the public key onl
 
 **Check the setup any time:** open `https://<your-site>/api/call/status`. It returns only yes/no results, never keys:
 `{"commit":"…","dailyApiKey":"ok","roomLookup":"ok","ready":true}`. `dailyApiKey` can also say `missing` (not set in Vercel), `rejected` (wrong key) or `unreachable`.
+Add `?deep=1` to also create and delete a throwaway private room and issue a test token against the real Daily API.
 
 ## 💻 Optional meeting links and Microsoft Teams embedding
 

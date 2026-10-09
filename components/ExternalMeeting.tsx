@@ -223,9 +223,16 @@ export default function ExternalMeeting({ meetingUrl, partnerName, onSave, onBac
         <p className="eyebrow">{service}</p>
         <h2 className="mt-3 font-display text-4xl text-cream sm:text-5xl">Our meeting link</h2>
         <p className="mt-3 text-[13.5px] italic text-cream/50">Saved to this room for both of you.</p>
-        <button className="btn-primary mt-8 px-8 py-3.5" onClick={enter} disabled={embed.state === "checking"}>
-          {embed.state === "checking" ? "Opening…" : `Open our ${service === "Microsoft Teams" ? "Teams" : service} meeting`}
-        </button>
+        {/* Default: open the meeting in its own tab (Teams / Meet / Zoom refuse to be shown inside other sites). */}
+        <a href={meetingUrl} target="_blank" rel="noopener noreferrer" className="btn-primary mt-8 px-8 py-3.5">
+          Open in {service === "Microsoft Teams" ? "Teams" : service} ↗
+        </a>
+        <p className="mt-2 text-[12px] text-cream/35">Opens in a new tab; this cinema and the chat stay here.</p>
+        {!NEVER_EMBED.includes(service) && (
+          <button className="mt-3 text-[12px] text-cream/35 underline-offset-4 hover:text-cream/70 hover:underline" onClick={enter} disabled={embed.state === "checking"}>
+            {embed.state === "checking" ? "Checking…" : "Try showing it inside this page"}
+          </button>
+        )}
         <div className="mt-6 flex items-center justify-center gap-3 text-[12.5px] text-cream/40">
           <button className="inline-flex items-center gap-1 hover:text-cream/80" onClick={() => {
             setValue(meetingUrl);

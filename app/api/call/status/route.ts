@@ -1,5 +1,6 @@
 import { jsonOk } from "@/lib/apiHelpers";
 import { lookupRoom } from "@/lib/roomLookup";
+import { selfTest } from "@/lib/daily";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,8 @@ export const dynamic = "force-dynamic";
  * Reports only yes/no style results (never keys or room data), so it can be
  * opened in a browser to see what's wrong on a deployment.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const deep = new URL(req.url).searchParams.get("deep") === "1";
   const commit = (process.env.VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7);
   const key = process.env.DAILY_API_KEY;
 
@@ -33,5 +35,15 @@ export async function GET() {
     supabase = "error";
   }
 
-  return jsonOk({ commit, dailyApiKey: daily, roomLookup: supabase, ready: daily === "ok" && supabase === "ok" });
+  // ?deep=1 → also create + delete a throwaway private room and issue a token.
+  let selftest: Awaited<ReturnType<typeof selfTest>> | undefined;
+  if (deep && daily === "ok") {
+    try {
+      selftest = await selfTest();
+    } catch (e) {
+      selftest = { createRoom: `error (${e instanceof Error ? e.message : "unknown"})`, createToken: "not run", deleteRoom: "not run" };
+    }
+  }
+  const deepOk = !selftest || (selftest.createRoom.startsWith("ok") && selftest.createToken === "ok");
+  return jsonOk({ commit, dailyApiKey: daily, roomLookup: supabase, selftest, ready: daily === "ok" && supabase === "ok" && deepOk });
 }

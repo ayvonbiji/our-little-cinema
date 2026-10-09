@@ -253,12 +253,30 @@ export default function CallStage({ code, myName, partnerName, partnerOnline, me
               Start Our Video Call ❤️
             </button>
             <p className="mt-3 text-[12px] text-cream/35">Camera and microphone are only asked for after you press start.</p>
-            <button
-              onClick={() => setView("link")}
-              className="mt-6 text-[12.5px] text-cream/40 underline-offset-4 hover:text-cream/80 hover:underline"
-            >
-              {meetingUrl ? `Or use our ${meetingService(meetingUrl)} link` : "Prefer Teams, Google Meet or Zoom? Use a meeting link"}
-            </button>
+            {/* External meetings are a separate, clearly-outside option: never the call itself. */}
+            <div className="mt-8 border-t border-white/[0.06] pt-4 text-[12px] text-cream/35">
+              {meetingUrl ? (
+                <>
+                  Other option:{" "}
+                  <a
+                    href={meetingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cream/55 underline-offset-4 hover:text-cream hover:underline"
+                  >
+                    open our {meetingService(meetingUrl)} meeting in a new tab ↗
+                  </a>
+                  {" · "}
+                  <button onClick={() => setView("link")} className="underline-offset-4 hover:text-cream/80 hover:underline">
+                    change link
+                  </button>
+                </>
+              ) : (
+                <button onClick={() => setView("link")} className="underline-offset-4 hover:text-cream/80 hover:underline">
+                  Save a Teams / Meet / Zoom link as a backup
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -278,9 +296,6 @@ export default function CallStage({ code, myName, partnerName, partnerOnline, me
                 Back
               </button>
             </div>
-            <button onClick={() => setView("link")} className="mt-5 text-[12.5px] text-cream/40 underline-offset-4 hover:text-cream/80 hover:underline">
-              Use a Teams / Meet / Zoom link instead
-            </button>
           </div>
         </div>
       )}
